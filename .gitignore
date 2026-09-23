@@ -1,0 +1,5 @@
+# Runtime log (recreated on each launch)
+*.log
+
+# Third-party NirSoft tool - download separately (see README)
+ControlMyMonitor/
