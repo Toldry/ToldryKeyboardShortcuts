@@ -109,5 +109,49 @@ class GSettingsHelperTests(unittest.TestCase):
         self.assertEqual(shortcuts.vt_switch_keys_to_free(make_config()), ["switch-to-session-3"])
 
 
+class LaptopLevelTests(unittest.TestCase):
+    LEVELS = [0, 5, 10, 15, 20, 25, 50, 75, 100]
+
+    def test_steps_up_and_down(self):
+        self.assertEqual(shortcuts.next_level(self.LEVELS, 25, "up"), 50)
+        self.assertEqual(shortcuts.next_level(self.LEVELS, 25, "down"), 20)
+        self.assertEqual(shortcuts.next_level(self.LEVELS, 5, "down"), 0)
+
+    def test_between_levels_snaps_to_neighbour(self):
+        self.assertEqual(shortcuts.next_level(self.LEVELS, 37, "up"), 50)
+        self.assertEqual(shortcuts.next_level(self.LEVELS, 37, "down"), 25)
+
+    def test_rounding_noise_is_ignored(self):
+        # A raw value can read back as 24.8% after setting 25%
+        self.assertEqual(shortcuts.next_level(self.LEVELS, 24.8, "down"), 20)
+        self.assertEqual(shortcuts.next_level(self.LEVELS, 24.8, "up"), 50)
+
+    def test_stays_at_ends(self):
+        self.assertEqual(shortcuts.next_level(self.LEVELS, 100, "up"), 100)
+        self.assertEqual(shortcuts.next_level(self.LEVELS, 0, "down"), 0)
+
+
+SAMPLE_DDCUTIL_DETECT = """\
+Invalid display
+   I2C bus:  /dev/i2c-3
+   DRM connector:           card1-eDP-1
+
+Display 1
+   I2C bus:  /dev/i2c-7
+   DRM connector:           card1-DP-1
+   Monitor:                 DEL:DELL U2720Q:ABC123
+
+Display 2
+   I2C bus:  /dev/i2c-9
+   Monitor:                 GSM:LG HDR 4K:XYZ
+"""
+
+
+class DdcutilTests(unittest.TestCase):
+    def test_parse_detect_buses(self):
+        self.assertEqual(shortcuts.parse_ddcutil_detect_buses(SAMPLE_DDCUTIL_DETECT),
+                         {1: 7, 2: 9})
+
+
 if __name__ == "__main__":
     unittest.main()

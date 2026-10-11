@@ -9,8 +9,8 @@ Ubuntu 24.04 LTS (also GNOME on Wayland by default) works the same way.
 
 | Key | Action | Ubuntu implementation | Status |
 |-----|--------|-----------------------|--------|
-| Ctrl+F1 | Laptop screen brightness −25 | sysfs backlight, set through systemd-logind | ✅ |
-| Ctrl+F2 | Laptop screen brightness +25 | same | ✅ |
+| Ctrl+F1 | Laptop screen brightness one level down | sysfs backlight, set through systemd-logind | ✅ |
+| Ctrl+F2 | Laptop screen brightness one level up | same | ✅ |
 | Ctrl+F3 | External monitor brightness −25 | DDC/CI via `ddcutil` | ✅ |
 | Ctrl+F4 | External monitor brightness +25 | same | ✅ |
 | Ctrl+Alt+F3 | Toggle system dark/light mode | GNOME `color-scheme` + Yaru theme | ✅ |
@@ -159,7 +159,7 @@ Edit `~/.config/toldry-shortcuts/config.ini`:
 |---------|---------|---------|
 | `[keyboards] external_bus_types` | `0003, 0005` | Buses that count as external (USB, Bluetooth) |
 | `[keyboards] ignore_names` | empty | Name fragments to never count as an external keyboard |
-| `[brightness] laptop_step_percent` | `25` | Step for Ctrl+F1/F2 |
+| `[brightness] laptop_levels_percent` | `0, 5, 10, 15, 20, 25, 50, 75, 100` | Levels Ctrl+F1/F2 step through |
 | `[brightness] monitor_step_percent` | `25` | Step for Ctrl+F3/F4 |
 | `[notifications] duration_ms` | `1000` | How long feedback banners stay up |
 | `[brightness] backlight_device` | all | One directory name in `/sys/class/backlight` to use instead of all of them |
@@ -167,9 +167,32 @@ Edit `~/.config/toldry-shortcuts/config.ini`:
 | `[bindings] …` | as in the AHK script | Key for each action, GNOME accelerator syntax |
 
 `ddcutil_args = --display 1` is the first DDC-capable monitor, replacing the
-Windows "Primary display" requirement. Changing it to `--bus N` (the bus number
-from `ddcutil detect`, as in `/dev/i2c-N`) makes each key press noticeably
-faster because `ddcutil` skips monitor detection.
+Windows "Primary display" requirement. The script looks up that monitor's I²C
+bus once per login and then calls `ddcutil --bus N`, which skips probing every
+monitor on each key press.
+
+The laptop levels are finer at the bottom on purpose: perceived brightness is
+roughly logarithmic, so going from 5% to 10% looks like a bigger change than
+going from 75% to 80%.
+
+### External monitor speed
+
+Each monitor key press costs one DDC/CI write over the video cable's I²C bus.
+The script already trims the software side: it skips monitor detection, skips
+reading the value back (`--noverify`), shows the notification before talking to
+the monitor, and when you press several times quickly it sends only the latest
+level instead of every step. What's left is mostly the monitor itself. The
+DDC/CI standard requires pauses of about 40–50 ms between messages, and many
+monitors then fade to the new brightness over a few hundred milliseconds.
+
+If your monitor tolerates it, shorter pauses help a bit more:
+
+```ini
+ddcutil_args = --display 1 --sleep-multiplier 0.3
+```
+
+Test with `ddcutil getvcp 10 --sleep-multiplier 0.3`. If you get errors or
+missed changes, go back up.
 
 After changing `[bindings]`, re-run `python3 linux/shortcuts.py install`.
 Other settings apply on the next key press. For `[keyboards]`, restart the
@@ -202,6 +225,8 @@ The log is cleared each time the watcher starts (each login), like
   monitor's real value, so it starts in sync. If you change brightness with
   the monitor's own buttons, the tracked value drifts until the next login,
   just as on Windows.
+- **Laptop brightness steps through levels** (0, 5, 10, 15, 20, 25, 50, 75,
+  100 by default) instead of fixed ±25 steps, for finer control when dim.
 - **Laptop brightness never goes fully to 0.** At 0% the script writes the
   lowest non-zero backlight level, because on many laptop panels a raw 0 turns
   the backlight off completely.

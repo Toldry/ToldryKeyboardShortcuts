@@ -44,7 +44,10 @@ STATE_DIR = _xdg_dir("XDG_STATE_HOME", Path.home() / ".local" / "state") / APP_I
 LOG_FILE = STATE_DIR / "shortcuts.log"
 SAVED_SETTINGS_FILE = STATE_DIR / "saved-settings.ini"
 RUNTIME_DIR = _xdg_dir("XDG_RUNTIME_DIR", STATE_DIR / "runtime") / APP_ID
-MONITOR_BRIGHTNESS_STATE_FILE = RUNTIME_DIR / "monitor-brightness"
+MONITOR_BRIGHTNESS_STATE_FILE = RUNTIME_DIR / "monitor-brightness"  # Target level
+MONITOR_APPLIED_STATE_FILE = RUNTIME_DIR / "monitor-brightness-applied"
+MONITOR_APPLY_LOCK_FILE = RUNTIME_DIR / "monitor-brightness.lock"
+MONITOR_BUS_CACHE_FILE = RUNTIME_DIR / "monitor-i2c-bus"
 SYSTEMD_UNIT_NAME = f"{APP_ID}-watcher.service"
 SYSTEMD_UNIT_FILE = (
     _xdg_dir("XDG_CONFIG_HOME", Path.home() / ".config") / "systemd" / "user" / SYSTEMD_UNIT_NAME
@@ -81,12 +84,15 @@ ignore_names =
 duration_ms = 1000
 
 [brightness]
-laptop_step_percent = 25
+# Levels Ctrl+F1/F2 step through. Finer at the bottom, where the eye is most
+# sensitive to changes.
+laptop_levels_percent = 0, 5, 10, 15, 20, 25, 50, 75, 100
 monitor_step_percent = 25
-# Name of a directory in /sys/class/backlight. Empty = auto-detect.
+# Name of a directory in /sys/class/backlight. Empty = set all of them.
 backlight_device =
-# Extra arguments for every ddcutil call. `--bus N` (see `ddcutil detect`) is
-# much faster than `--display N` because it skips monitor detection.
+# Extra arguments for every ddcutil call. `--display N` picks the monitor; it is
+# looked up once per login and replaced by its faster `--bus N` form.
+# Add e.g. `--sleep-multiplier 0.3` to speed up monitors that tolerate it.
 ddcutil_args = --display 1
 
 [bindings]
@@ -313,10 +319,10 @@ def find_backlight_devices(config: configparser.ConfigParser) -> list[Path]:
     return sorted(candidates, key=preference_rank)
 
 
-def read_backlight_percent(device: Path) -> int:
+def read_backlight_percent(device: Path) -> float:
     max_raw = int((device / "max_brightness").read_text())
     current_raw = int((device / "brightness").read_text())
-    return round(current_raw * 100 / max_raw)
+    return current_raw * 100 / max_raw
 
 
 def set_backlight_raw(device: Path, raw_value: int) -> None:
@@ -338,9 +344,20 @@ def set_backlight_raw(device: Path, raw_value: int) -> None:
         ) from error
 
 
-def adjust_laptop_brightness(config: configparser.ConfigParser, delta_percent: int) -> None:
+def next_level(levels: list[int], current_percent: float, direction: str) -> int:
+    """The next level above (direction "up") or below ("down") the current one."""
+    if direction == "up":
+        return min((level for level in levels if level > current_percent + 0.5),
+                   default=max(levels))
+    return max((level for level in levels if level < current_percent - 0.5),
+               default=min(levels))
+
+
+def adjust_laptop_brightness(config: configparser.ConfigParser, direction: str) -> None:
     devices = find_backlight_devices(config)
-    new_percent = clamp_percent(read_backlight_percent(devices[0]) + delta_percent)
+    levels = sorted(clamp_percent(int(level)) for level in
+                    _comma_list(config["brightness"]["laptop_levels_percent"]))
+    new_percent = next_level(levels, read_backlight_percent(devices[0]), direction)
     for device in devices:
         max_raw = int((device / "max_brightness").read_text())
         # Never write 0: on many panels that switches the backlight fully off.
@@ -361,13 +378,76 @@ def adjust_laptop_brightness(config: configparser.ConfigParser, delta_percent: i
 # ---------------------------------------------------------------------------
 
 
-def ddcutil_command(config: configparser.ConfigParser, *args: str) -> list[str]:
-    return ["ddcutil", *shlex.split(config["brightness"]["ddcutil_args"]), *args]
+def parse_ddcutil_detect_buses(detect_output: str) -> dict[int, int]:
+    """Map display numbers to I2C bus numbers from `ddcutil detect --brief`."""
+    buses = {}
+    display_number = None
+    for line in detect_output.splitlines():
+        display_match = re.match(r"Display (\d+)", line)
+        if display_match:
+            display_number = int(display_match.group(1))
+        elif not line.startswith(" "):
+            display_number = None  # e.g. "Invalid display"
+        bus_match = re.search(r"I2C bus:\s*/dev/i2c-(\d+)", line)
+        if bus_match and display_number is not None:
+            buses[display_number] = int(bus_match.group(1))
+    return buses
+
+
+def resolve_ddcutil_args(config: configparser.ConfigParser, use_cache: bool = True) -> list[str]:
+    """Configured ddcutil args, with `--display N` replaced by `--bus B`.
+
+    `--display` makes ddcutil probe every monitor on each call, which is most of
+    its run time; `--bus` goes straight to the right I2C bus.
+    """
+    args = shlex.split(config["brightness"]["ddcutil_args"])
+    if any(arg in ("--bus", "-b") or arg.startswith("--bus=") for arg in args):
+        return args
+    display_number = 1
+    for flag in ("--display", "-d"):
+        if flag in args:
+            position = args.index(flag)
+            display_number = int(args[position + 1])
+            del args[position:position + 2]
+
+    cached_bus = ""
+    if use_cache:
+        try:
+            cached_display, cached_bus = MONITOR_BUS_CACHE_FILE.read_text().split()
+            if int(cached_display) != display_number:
+                cached_bus = ""
+        except (OSError, ValueError):
+            cached_bus = ""
+    if not cached_bus:
+        result = run_command(["ddcutil", "detect", "--brief"], timeout_seconds=20)
+        bus_number = parse_ddcutil_detect_buses(result.stdout).get(display_number)
+        if bus_number is None:
+            logger.info("ddcutil detect found no display %d: %r", display_number, result.stderr)
+            return ["--display", str(display_number), *args]
+        cached_bus = str(bus_number)
+        RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+        MONITOR_BUS_CACHE_FILE.write_text(f"{display_number} {cached_bus}")
+        logger.info("Display %d is on /dev/i2c-%s", display_number, cached_bus)
+    return ["--bus", cached_bus, *args]
+
+
+def run_ddcutil(config: configparser.ConfigParser, *args: str,
+                timeout_seconds: float = 15) -> subprocess.CompletedProcess:
+    command = ["ddcutil", *resolve_ddcutil_args(config), *args]
+    logger.info("Running command: %s", shlex.join(command))
+    result = run_command(command, timeout_seconds)
+    if result.returncode != 0 and MONITOR_BUS_CACHE_FILE.exists():
+        # The monitor may have moved to another bus (re-plugged, dock): look again.
+        MONITOR_BUS_CACHE_FILE.unlink(missing_ok=True)
+        command = ["ddcutil", *resolve_ddcutil_args(config, use_cache=False), *args]
+        logger.info("Retrying: %s", shlex.join(command))
+        result = run_command(command, timeout_seconds)
+    return result
 
 
 def read_monitor_brightness(config: configparser.ConfigParser) -> int:
     try:
-        result = run_command(ddcutil_command(config, "getvcp", DDC_VCP_BRIGHTNESS, "--brief"))
+        result = run_ddcutil(config, "getvcp", DDC_VCP_BRIGHTNESS, "--brief")
         # Brief output looks like: "VCP 10 C 50 100" (current value, then maximum)
         fields = result.stdout.split()
         if result.returncode == 0 and len(fields) >= 5 and fields[3].isdigit():
@@ -378,12 +458,21 @@ def read_monitor_brightness(config: configparser.ConfigParser) -> int:
     return MONITOR_BRIGHTNESS_FALLBACK
 
 
+def _read_int_file(path: Path) -> int | None:
+    try:
+        text = path.read_text().strip()
+    except OSError:
+        return None
+    return int(text) if text.isdigit() else None
+
+
 def adjust_monitor_brightness(config: configparser.ConfigParser, delta_percent: int) -> None:
     if not shutil.which("ddcutil"):
         raise RuntimeError("ddcutil is not installed: sudo apt install ddcutil")
     RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
-    # Tracked in a file (like the AHK script's in-memory variable) because DDC/CI
-    # reads are slow. The lock serialises rapid key presses.
+    # The target level is tracked in a file (like the AHK script's in-memory
+    # variable) because DDC/CI reads are slow. Updating it is instant, so the
+    # notification never waits for the monitor.
     with open(MONITOR_BRIGHTNESS_STATE_FILE, "a+") as state_file:
         fcntl.flock(state_file, fcntl.LOCK_EX)
         state_file.seek(0)
@@ -394,22 +483,30 @@ def adjust_monitor_brightness(config: configparser.ConfigParser, delta_percent: 
             current_percent = read_monitor_brightness(config)
             logger.info("Read initial external monitor brightness: %d%%", current_percent)
         new_percent = clamp_percent(current_percent + delta_percent)
-
-        notify(
-            f"External Monitor Brightness: {new_percent}%",
-            icon="display-brightness-symbolic",
-            progress_percent=new_percent,
-        )
-        command = ddcutil_command(config, "setvcp", DDC_VCP_BRIGHTNESS, str(new_percent))
-        logger.info("Running command: %s", shlex.join(command))
-        result = run_command(command, timeout_seconds=15)
-        if result.returncode != 0:
-            raise RuntimeError(f"ddcutil failed: {result.stderr.strip() or result.stdout.strip()}")
-
         state_file.seek(0)
         state_file.truncate()
         state_file.write(str(new_percent))
-    logger.info("External monitor brightness set to: %d", new_percent)
+    notify(
+        f"External Monitor Brightness: {new_percent}%",
+        icon="display-brightness-symbolic",
+        progress_percent=new_percent,
+    )
+
+    # Only one process talks to the monitor at a time. Presses that queue up
+    # behind it skip their write when an earlier process already sent the
+    # latest target, so rapid presses cost one or two DDC writes, not one each.
+    with open(MONITOR_APPLY_LOCK_FILE, "a") as apply_lock:
+        fcntl.flock(apply_lock, fcntl.LOCK_EX)
+        target_percent = _read_int_file(MONITOR_BRIGHTNESS_STATE_FILE)
+        if target_percent is None or target_percent == _read_int_file(MONITOR_APPLIED_STATE_FILE):
+            return
+        result = run_ddcutil(
+            config, "setvcp", DDC_VCP_BRIGHTNESS, str(target_percent), "--noverify"
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"ddcutil failed: {result.stderr.strip() or result.stdout.strip()}")
+        MONITOR_APPLIED_STATE_FILE.write_text(str(target_percent))
+    logger.info("External monitor brightness set to: %d", target_percent)
 
 
 # ---------------------------------------------------------------------------
@@ -740,7 +837,7 @@ def print_status(config: configparser.ConfigParser) -> None:
             backlight_type = (device / "type").read_text().strip()
             actual_raw = (device / "actual_brightness").read_text().strip()
             print(f"Laptop backlight: {device.name} ({backlight_type}) at "
-                  f"{read_backlight_percent(device)}%, actual_brightness {actual_raw}")
+                  f"{read_backlight_percent(device):.0f}%, actual_brightness {actual_raw}")
     except (RuntimeError, OSError) as error:
         print(f"Laptop backlight: {error}")
     try:
@@ -785,9 +882,8 @@ def main() -> None:
     config = load_config()
     try:
         if arguments.command == "laptop-brightness":
-            step = config["brightness"].getint("laptop_step_percent")
             logger.info("Laptop brightness %s pressed", arguments.direction)
-            adjust_laptop_brightness(config, step if arguments.direction == "up" else -step)
+            adjust_laptop_brightness(config, arguments.direction)
         elif arguments.command == "monitor-brightness":
             step = config["brightness"].getint("monitor_step_percent")
             logger.info("Monitor brightness %s pressed", arguments.direction)
