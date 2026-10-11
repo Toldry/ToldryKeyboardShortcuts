@@ -76,6 +76,10 @@ external_bus_types = 0003, 0005
 # reports itself as a keyboard). Run `shortcuts.py list-keyboards` to see names.
 ignore_names =
 
+[notifications]
+# How long hotkey feedback banners stay on screen, in milliseconds.
+duration_ms = 1000
+
 [brightness]
 laptop_step_percent = 25
 monitor_step_percent = 25
@@ -132,25 +136,24 @@ def run_command(args: list[str], timeout_seconds: float = 10) -> subprocess.Comp
 def notify(
     text: str,
     *,
-    tag: str,
+    tag: str = "osd",
     icon: str = "",
     progress_percent: int | None = None,
-    timeout_ms: int = 1000,
+    duration_ms: int | None = None,
 ) -> None:
     """Show a desktop notification (the Linux stand-in for an AHK ToolTip).
 
-    Repeated notifications with the same tag replace each other instead of
-    piling up, so holding a hotkey shows one updating banner.
+    All hotkey feedback shares one tag, so a key pressed while the previous
+    banner is still visible updates that banner instead of adding another.
+    GNOME ignores notify-send's --expire-time and keeps banners up for several
+    seconds, so a detached helper closes the banner after `duration_ms`.
     """
     logger.info("Notify: %s", text.replace("\n", " / "))
     if not shutil.which("notify-send"):
         return
-    common_args = [
-        "notify-send",
-        f"--app-name={APP_DISPLAY_NAME}",
-        f"--expire-time={timeout_ms}",
-        "--transient",
-    ]
+    if duration_ms is None:
+        duration_ms = load_config()["notifications"].getint("duration_ms")
+    common_args = ["notify-send", f"--app-name={APP_DISPLAY_NAME}", "--transient"]
     if icon:
         common_args.append(f"--icon={icon}")
     if progress_percent is not None:
@@ -159,22 +162,53 @@ def notify(
     id_file = RUNTIME_DIR / f"notification-{tag}.id"
     replace_args = []
     try:
-        previous_id = id_file.read_text().strip()
+        previous_id = id_file.read_text().split()[0]
         if previous_id.isdigit():
             replace_args = [f"--replace-id={previous_id}"]
-    except OSError:
+    except (OSError, IndexError):
         pass
 
     try:
         result = run_command(common_args + replace_args + ["--print-id", text], 5)
-        if result.returncode == 0 and result.stdout.strip().isdigit():
-            RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
-            id_file.write_text(result.stdout.strip())
+        notification_id = result.stdout.strip()
+        if result.returncode != 0 or not notification_id.isdigit():
+            # Older notify-send without --print-id / --replace-id support
+            run_command(common_args + [text], 5)
             return
-        # Older notify-send without --print-id / --replace-id support
-        run_command(common_args + [text], 5)
     except (OSError, subprocess.TimeoutExpired) as error:
         logger.info("notify-send failed: %s", error)
+        return
+
+    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    id_file.write_text(f"{notification_id} {time.time() + duration_ms / 1000}")
+    subprocess.Popen(
+        [sys.executable, str(SCRIPT_PATH), "close-notification", tag],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True,  # Outlive this short-lived hotkey process
+    )
+
+
+def close_notification_when_due(tag: str) -> None:
+    """Close the tag's notification once its latest close time has passed.
+
+    A newer notification with the same tag pushes the close time back, so
+    rapid key presses keep one banner up until the last one's time is over.
+    """
+    id_file = RUNTIME_DIR / f"notification-{tag}.id"
+    while True:
+        try:
+            notification_id, close_at = id_file.read_text().split()
+            seconds_left = float(close_at) - time.time()
+        except (OSError, ValueError):
+            return
+        if seconds_left <= 0:
+            break
+        time.sleep(seconds_left)
+    run_command([
+        "busctl", "--user", "call", "org.freedesktop.Notifications",
+        "/org/freedesktop/Notifications", "org.freedesktop.Notifications",
+        "CloseNotification", "u", notification_id,
+    ], 5)
 
 
 # ---------------------------------------------------------------------------
@@ -250,13 +284,19 @@ def is_external_keyboard_connected(config: configparser.ConfigParser) -> bool:
 # Laptop screen brightness (sysfs backlight, set through systemd-logind)
 # ---------------------------------------------------------------------------
 
-BACKLIGHT_TYPE_PREFERENCE = ("firmware", "platform", "raw")  # Per kernel sysfs docs
+BACKLIGHT_TYPE_PREFERENCE = ("raw", "platform", "firmware")
 
 
-def find_backlight_device(config: configparser.ConfigParser) -> Path:
+def find_backlight_devices(config: configparser.ConfigParser) -> list[Path]:
+    """All backlight devices to drive, the one to read the level from first.
+
+    Many laptops expose several devices (e.g. intel_backlight plus acpi_video0
+    or nvidia_0) and only one of them actually changes the panel. Rather than
+    guess, every device gets the same level, unless one is configured.
+    """
     configured_name = config["brightness"]["backlight_device"].strip()
     if configured_name:
-        return SYS_BACKLIGHT_DIR / configured_name
+        return [SYS_BACKLIGHT_DIR / configured_name]
     candidates = sorted(SYS_BACKLIGHT_DIR.glob("*")) if SYS_BACKLIGHT_DIR.exists() else []
     if not candidates:
         raise RuntimeError("No laptop backlight found in /sys/class/backlight")
@@ -270,7 +310,7 @@ def find_backlight_device(config: configparser.ConfigParser) -> Path:
             return BACKLIGHT_TYPE_PREFERENCE.index(backlight_type)
         return len(BACKLIGHT_TYPE_PREFERENCE)
 
-    return min(candidates, key=preference_rank)
+    return sorted(candidates, key=preference_rank)
 
 
 def read_backlight_percent(device: Path) -> int:
@@ -281,7 +321,7 @@ def read_backlight_percent(device: Path) -> int:
 
 def set_backlight_raw(device: Path, raw_value: int) -> None:
     # systemd-logind lets the user of the active session set the backlight
-    # without root, on Wayland and X11 alike.
+    # without root.
     logind_result = run_command([
         "busctl", "call", "org.freedesktop.login1",
         "/org/freedesktop/login1/session/auto", "org.freedesktop.login1.Session",
@@ -299,16 +339,18 @@ def set_backlight_raw(device: Path, raw_value: int) -> None:
 
 
 def adjust_laptop_brightness(config: configparser.ConfigParser, delta_percent: int) -> None:
-    device = find_backlight_device(config)
-    max_raw = int((device / "max_brightness").read_text())
-    new_percent = clamp_percent(read_backlight_percent(device) + delta_percent)
-    # Never write 0: on many panels that switches the backlight fully off.
-    new_raw = max(1, round(new_percent * max_raw / 100))
-    set_backlight_raw(device, new_raw)
-    logger.info("Laptop brightness (%s) set to %d%% (raw %d)", device.name, new_percent, new_raw)
+    devices = find_backlight_devices(config)
+    new_percent = clamp_percent(read_backlight_percent(devices[0]) + delta_percent)
+    for device in devices:
+        max_raw = int((device / "max_brightness").read_text())
+        # Never write 0: on many panels that switches the backlight fully off.
+        new_raw = max(1, round(new_percent * max_raw / 100))
+        set_backlight_raw(device, new_raw)
+        actual_raw = (device / "actual_brightness").read_text().strip()
+        logger.info("Laptop brightness (%s) set to %d%% (raw %d, actual_brightness now %s)",
+                    device.name, new_percent, new_raw, actual_raw)
     notify(
         f"Laptop Brightness: {new_percent}%",
-        tag="laptop-brightness",
         icon="display-brightness-symbolic",
         progress_percent=new_percent,
     )
@@ -355,7 +397,6 @@ def adjust_monitor_brightness(config: configparser.ConfigParser, delta_percent: 
 
         notify(
             f"External Monitor Brightness: {new_percent}%",
-            tag="monitor-brightness",
             icon="display-brightness-symbolic",
             progress_percent=new_percent,
         )
@@ -430,9 +471,7 @@ def toggle_dark_mode() -> None:
     logger.info("Dark mode toggled: %s", mode_name)
     notify(
         f"System Mode: {mode_name}",
-        tag="dark-mode",
         icon="weather-clear-night-symbolic" if switch_to_dark else "weather-clear-symbolic",
-        timeout_ms=1500,
     )
 
 
@@ -649,7 +688,7 @@ def watch_keyboards(config: configparser.ConfigParser) -> None:
         refresh()
         startup_status = f"External KB: {'Yes' if last_connected_state else 'No'}"
         logger.info("=== STARTUP STATUS === %s", startup_status)
-        notify(f"Keyboard shortcuts active\n{startup_status}", tag="startup", timeout_ms=4000)
+        notify(f"Keyboard shortcuts active\n{startup_status}", tag="startup", duration_ms=4000)
 
         if shutil.which("udevadm"):
             # udev events wake us immediately on hotplug; polling is only a fallback.
@@ -697,8 +736,11 @@ def list_keyboards(config: configparser.ConfigParser) -> None:
 def print_status(config: configparser.ConfigParser) -> None:
     print(f"External keyboard connected: {is_external_keyboard_connected(config)}")
     try:
-        device = find_backlight_device(config)
-        print(f"Laptop backlight: {device.name} at {read_backlight_percent(device)}%")
+        for device in find_backlight_devices(config):
+            backlight_type = (device / "type").read_text().strip()
+            actual_raw = (device / "actual_brightness").read_text().strip()
+            print(f"Laptop backlight: {device.name} ({backlight_type}) at "
+                  f"{read_backlight_percent(device)}%, actual_brightness {actual_raw}")
     except (RuntimeError, OSError) as error:
         print(f"Laptop backlight: {error}")
     try:
@@ -728,6 +770,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
         brightness_parser.add_argument("direction", choices=("up", "down"))
     subparsers.add_parser("toggle-dark-mode", help="Toggle system dark/light mode")
     subparsers.add_parser("watch-keyboards", help="Background watcher (run by systemd)")
+    close_parser = subparsers.add_parser("close-notification", help=argparse.SUPPRESS)
+    close_parser.add_argument("tag")
     subparsers.add_parser("list-keyboards", help="Show detected keyboards and their classification")
     subparsers.add_parser("status", help="Show current state of everything")
     subparsers.add_parser("install", help="Register shortcuts and start the watcher")
@@ -750,6 +794,8 @@ def main() -> None:
             adjust_monitor_brightness(config, step if arguments.direction == "up" else -step)
         elif arguments.command == "toggle-dark-mode":
             toggle_dark_mode()
+        elif arguments.command == "close-notification":
+            close_notification_when_due(arguments.tag)
         elif arguments.command == "watch-keyboards":
             watch_keyboards(config)
         elif arguments.command == "list-keyboards":
@@ -763,7 +809,7 @@ def main() -> None:
     except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
         logger.info("ERROR in %s: %s", arguments.command, error)
         # Hotkey commands have no terminal, so surface errors on screen too.
-        notify(f"Error: {error}", tag="error", icon="dialog-error", timeout_ms=2500)
+        notify(f"Error: {error}", icon="dialog-error", duration_ms=2500)
         sys.exit(f"Error: {error}")
 
 

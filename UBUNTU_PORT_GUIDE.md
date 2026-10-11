@@ -147,8 +147,9 @@ This:
    `toldry-shortcuts-watcher.service`, which runs the keyboard watcher now and
    at every login. It is the equivalent of the Windows Startup-folder shortcut.
 
-Try the keys. Feedback appears as a short GNOME notification banner, the
-closest equivalent of the AHK tooltips.
+Try the keys. Feedback appears as a GNOME notification banner, the closest
+equivalent of the AHK tooltips. It closes after 1 s, and a key pressed while
+it's still showing updates the same banner instead of adding another.
 
 ### 5. Configure (optional)
 
@@ -160,7 +161,8 @@ Edit `~/.config/toldry-shortcuts/config.ini`:
 | `[keyboards] ignore_names` | empty | Name fragments to never count as an external keyboard |
 | `[brightness] laptop_step_percent` | `25` | Step for Ctrl+F1/F2 |
 | `[brightness] monitor_step_percent` | `25` | Step for Ctrl+F3/F4 |
-| `[brightness] backlight_device` | auto | Directory name in `/sys/class/backlight` |
+| `[notifications] duration_ms` | `1000` | How long feedback banners stay up |
+| `[brightness] backlight_device` | all | One directory name in `/sys/class/backlight` to use instead of all of them |
 | `[brightness] ddcutil_args` | `--display 1` | Which monitor `ddcutil` talks to |
 | `[bindings] …` | as in the AHK script | Key for each action, GNOME accelerator syntax |
 
@@ -210,7 +212,9 @@ The log is cleared each time the watcher starts (each login), like
   the legacy GTK3 and icon themes, matching what Settings → Appearance does.
   No broadcast is needed, unlike `WM_SETTINGCHANGE` on Windows.
 - **Feedback** is a notification banner instead of a tooltip near the cursor.
-  Wayland doesn't let apps place windows at the cursor.
+  Wayland doesn't let apps place windows at the cursor. GNOME ignores the
+  display time apps ask for, so the script closes each banner itself after
+  `duration_ms`.
 - **Startup status** shows "External KB: Yes/No" in a notification at login.
   The headphones line is omitted until that feature is ported.
 
@@ -235,8 +239,21 @@ sudo apt install brightnessctl   # Its udev rule lets the `video` group write it
 sudo usermod -aG video "$USER"   # Then log out and back in
 ```
 
-If you have more than one backlight device (`ls /sys/class/backlight`) and the
-wrong one is picked, set `backlight_device` in the config.
+### Laptop brightness: notification shows, screen doesn't change
+
+Many laptops expose more than one backlight device (for example
+`intel_backlight` plus `acpi_video0` or `nvidia_0`), and only one of them
+actually dims the panel. By default the script sets all of them to the same
+level. To find the one that works, run
+
+```bash
+python3 linux/shortcuts.py status
+```
+
+press the key, and run it again: the device whose `actual_brightness` follows
+the notification is the real one. You can then set `backlight_device` to it in
+the config. If none of them change, your panel may be one (often OLED) that
+GNOME dims in software, which the script can't control yet.
 
 ### External monitor: "ddcutil failed"
 
@@ -292,7 +309,7 @@ python3 linux/test_shortcuts.py   # Unit tests for parsing and helpers
   https://help.gnome.org/users/gnome-help/stable/keyboard-shortcuts-set.html
 - systemd-logind `SetBrightness`:
   https://www.freedesktop.org/software/systemd/man/latest/org.freedesktop.login1.html
-- Kernel backlight sysfs interface (device type preference):
+- Kernel backlight sysfs interface:
   https://www.kernel.org/doc/Documentation/ABI/stable/sysfs-class-backlight
 - `ddcutil` documentation and I²C permissions: https://www.ddcutil.com/
 - `/proc/bus/input/devices` and udev's keyboard heuristic:
