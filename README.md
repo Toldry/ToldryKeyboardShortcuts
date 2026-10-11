@@ -2,6 +2,8 @@
 
 AutoHotkey v2 script with hotkeys for screen brightness, system dark/light mode, and Bluetooth headphones.
 
+On Ubuntu, see [UBUNTU_PORT_GUIDE.md](UBUNTU_PORT_GUIDE.md) for the Linux port in `linux/`.
+
 ## Hotkeys
 
 | Key | Action |
