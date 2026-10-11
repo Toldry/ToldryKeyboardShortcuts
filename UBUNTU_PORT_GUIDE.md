@@ -159,7 +159,7 @@ Edit `~/.config/toldry-shortcuts/config.ini`:
 |---------|---------|---------|
 | `[keyboards] external_bus_types` | `0003, 0005` | Buses that count as external (USB, Bluetooth) |
 | `[keyboards] ignore_names` | empty | Name fragments to never count as an external keyboard |
-| `[brightness] laptop_levels_percent` | `0, 5, 10, 15, 20, 25, 50, 75, 100` | Levels Ctrl+F1/F2 step through |
+| `[brightness] laptop_levels_percent` | `0, 1, 2, 3, 4, 5, 10, 15, 20, 25, 50, 75, 100` | Levels Ctrl+F1/F2 step through |
 | `[brightness] monitor_step_percent` | `25` | Step for Ctrl+F3/F4 |
 | `[notifications] duration_ms` | `1000` | How long feedback banners stay up |
 | `[brightness] backlight_device` | all | One directory name in `/sys/class/backlight` to use instead of all of them |

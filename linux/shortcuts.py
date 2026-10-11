@@ -86,7 +86,7 @@ duration_ms = 1000
 [brightness]
 # Levels Ctrl+F1/F2 step through. Finer at the bottom, where the eye is most
 # sensitive to changes.
-laptop_levels_percent = 0, 5, 10, 15, 20, 25, 50, 75, 100
+laptop_levels_percent = 0, 1, 2, 3, 4, 5, 10, 15, 20, 25, 50, 75, 100
 monitor_step_percent = 25
 # Name of a directory in /sys/class/backlight. Empty = set all of them.
 backlight_device =
