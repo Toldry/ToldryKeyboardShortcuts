@@ -3,3 +3,6 @@
 
 # Third-party NirSoft tool - download separately (see README)
 ControlMyMonitor/
+
+# Python bytecode
+__pycache__/
