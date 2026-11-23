@@ -169,6 +169,27 @@ class DdcutilTests(unittest.TestCase):
         self.assertEqual(shortcuts.MONITOR_BRIGHTNESS_STATE_FILE.parent, shortcuts.STATE_DIR)
 
 
+class LoggingTests(unittest.TestCase):
+    def test_watcher_log_does_not_overwrite_hotkey_lines(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log_file = Path(directory) / "shortcuts.log"
+            log_file.write_text("old login\n")
+            with mock.patch.object(shortcuts, "STATE_DIR", Path(directory)), \
+                    mock.patch.object(shortcuts, "LOG_FILE", log_file):
+                shortcuts.setup_logging(truncate=True)
+            try:
+                shortcuts.logger.info("watcher started")
+                with open(log_file, "a") as hotkey_process:
+                    hotkey_process.write("hotkey pressed\n")
+                shortcuts.logger.info("unlock seen")
+                lines = [line.split(" | ")[-1] for line in log_file.read_text().splitlines()]
+            finally:
+                for handler in list(shortcuts.logger.handlers):
+                    shortcuts.logger.removeHandler(handler)
+                    handler.close()
+            self.assertEqual(lines, ["watcher started", "hotkey pressed", "unlock seen"])
+
+
 class WatcherActionTests(unittest.TestCase):
     def test_keyboard_hotplug(self):
         line = "UDEV  [1234.567890] add      /devices/pci0000:00/usb1/1-2/input/input30 (input)"

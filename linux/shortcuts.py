@@ -125,7 +125,12 @@ logger = logging.getLogger(APP_ID)
 
 def setup_logging(truncate: bool = False) -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    handler = logging.FileHandler(LOG_FILE, mode="w" if truncate else "a")
+    if truncate:
+        LOG_FILE.write_text("")
+    # Always append (O_APPEND): the watcher and every hotkey process write to
+    # the same file, and a handler opened with "w" writes at its own offset,
+    # over whatever the others appended since.
+    handler = logging.FileHandler(LOG_FILE, mode="a")
     handler.setFormatter(
         logging.Formatter("%(asctime)s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
     )
