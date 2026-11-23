@@ -10,7 +10,14 @@
 
 ; Global variables
 global LOG_FILE := A_ScriptDir "\brightness_control.log"
-global externalBrightness := 50  ; Tracked in memory since DDC/CI reads hang
+; External monitor brightness is tracked rather than read back, since DDC/CI reads
+; hang. It is saved to a file so it survives a restart, and set again after unlock,
+; resume from sleep and the monitor reconnecting, when monitors may lower it.
+global EXTERNAL_SETTINGS_FILE := A_AppData "\BrightnessControl\settings.ini"
+global EXTERNAL_BRIGHTNESS_DEFAULT := 50
+global externalBrightness := LoadExternalBrightness()
+; A monitor that is still waking up ignores DDC/CI, so restore twice: soon and later.
+global EXTERNAL_RESTORE_DELAYS_MS := [3000, 10000]
 global BT_HEADPHONES_NAME := "WH-1000XM4"  ; Exact paired Bluetooth device name
 global BT_START_DELAY_MS := 50           ; Lets the "...ing" tooltip paint before the blocking Bluetooth call
 global BT_POLL_INTERVAL_MS := 500        ; How often to check for the connection state change
@@ -160,34 +167,107 @@ GetCurrentLaptopBrightness() {
     return 50
 }
 
+; Path to NirSoft ControlMyMonitor, or "" (after telling the user) when it is missing
+ControlMyMonitorPath() {
+    path := A_ScriptDir "\ControlMyMonitor\ControlMyMonitor.exe"
+    if FileExist(path)
+        return path
+    LogMessage("ERROR: ControlMyMonitor.exe not found at: " path)
+    MsgBox("ControlMyMonitor.exe not found!`n`nPlease download from:`nhttps://www.nirsoft.net/utils/control_my_monitor.html`n`nAnd place in: " A_ScriptDir)
+    return ""
+}
+
+LoadExternalBrightness() {
+    try {
+        level := Integer(IniRead(EXTERNAL_SETTINGS_FILE, "ExternalMonitor", "Brightness", EXTERNAL_BRIGHTNESS_DEFAULT))
+        return Max(0, Min(100, level))
+    }
+    catch {
+        return EXTERNAL_BRIGHTNESS_DEFAULT
+    }
+}
+
+SaveExternalBrightness(level) {
+    try {
+        SplitPath(EXTERNAL_SETTINGS_FILE, , &settingsDir)
+        DirCreate(settingsDir)
+        IniWrite(level, EXTERNAL_SETTINGS_FILE, "ExternalMonitor", "Brightness")
+    }
+    catch as err {
+        LogMessage("ERROR saving external brightness: " err.Message)
+    }
+}
+
+; Send a brightness level to the external monitor. VCP code 10 = brightness.
+SetExternalMonitorBrightness(level) {
+    controlMyMonitorPath := ControlMyMonitorPath()
+    if !controlMyMonitorPath
+        return false
+    command := controlMyMonitorPath ' /SetValue "Primary" 10 ' level
+    LogMessage("Running command: " command)
+    Run(command, , "Hide")
+    return true
+}
+
 ; Function to adjust external monitor using DDC/CI
 AdjustExternalMonitor(delta) {
     global externalBrightness
-    controlMyMonitorPath := A_ScriptDir "\ControlMyMonitor\ControlMyMonitor.exe"
-
     LogMessage("AdjustExternalMonitor called with delta: " delta)
 
-    if !FileExist(controlMyMonitorPath) {
-        LogMessage("ERROR: ControlMyMonitor.exe not found at: " controlMyMonitorPath)
-        MsgBox("ControlMyMonitor.exe not found!`n`nPlease download from:`nhttps://www.nirsoft.net/utils/control_my_monitor.html`n`nAnd place in: " A_ScriptDir)
+    newBrightness := Max(0, Min(100, externalBrightness + delta))
+    if !SetExternalMonitorBrightness(newBrightness)
         return
-    }
-
-    newBrightness := externalBrightness + delta
-    if newBrightness > 100
-        newBrightness := 100
-    if newBrightness < 0
-        newBrightness := 0
     externalBrightness := newBrightness
-
-    ; Use SetValue with tracked absolute level - VCP code 10 = brightness.
-    command := controlMyMonitorPath ' /SetValue "Primary" 10 ' newBrightness
-    LogMessage("Running command: " command)
-    Run(command, , "Hide")
+    SaveExternalBrightness(newBrightness)
 
     ToolTip("External Monitor Brightness: " newBrightness "%")
     SetTimer(() => ToolTip(), -1000)
     LogMessage("External monitor brightness set to: " newBrightness)
+}
+
+; Set the monitor back to the saved level. Only once a level was saved: before the
+; first Ctrl+F3/F4 press there is nothing to go back to.
+RestoreExternalMonitor() {
+    if IniRead(EXTERNAL_SETTINGS_FILE, "ExternalMonitor", "Brightness", "") = ""
+        return
+    LogMessage("Restoring external monitor brightness to: " externalBrightness)
+    if FileExist(A_ScriptDir "\ControlMyMonitor\ControlMyMonitor.exe")
+        SetExternalMonitorBrightness(externalBrightness)
+}
+
+; Restore a few seconds after an event; a new event restarts the timers, so a burst
+; of them (resume, then unlock, then the monitor reconnecting) costs one restore.
+ScheduleExternalMonitorRestore(reason) {
+    LogMessage("External monitor restore scheduled: " reason)
+    for index, delayMs in EXTERNAL_RESTORE_DELAYS_MS
+        SetTimer(RestoreTimers[index], -delayMs)
+}
+; One timer object per delay: SetTimer on the same object restarts it.
+global RestoreTimers := [() => RestoreExternalMonitor(), () => RestoreExternalMonitor()]
+
+; WM_WTSSESSION_CHANGE: the session was unlocked
+global WM_WTSSESSION_CHANGE := 0x02B1
+global WTS_SESSION_UNLOCK := 0x8
+; WM_POWERBROADCAST: resumed from sleep
+global WM_POWERBROADCAST := 0x0218
+global PBT_APMRESUMEAUTOMATIC := 0x12
+global PBT_APMRESUMESUSPEND := 0x7
+; WM_DISPLAYCHANGE: a monitor was connected or the display layout changed
+global WM_DISPLAYCHANGE := 0x007E
+global NOTIFY_FOR_THIS_SESSION := 0
+
+OnSessionChange(wParam, *) {
+    if wParam = WTS_SESSION_UNLOCK
+        ScheduleExternalMonitorRestore("unlock")
+}
+
+OnPowerBroadcast(wParam, *) {
+    if wParam = PBT_APMRESUMEAUTOMATIC || wParam = PBT_APMRESUMESUSPEND
+        ScheduleExternalMonitorRestore("resume")
+}
+
+OnDisplayChange(*) {
+    ScheduleExternalMonitorRestore("display change")
 }
 
 ; ---- Bluetooth headphones: Bluetooth stack constants (BluetoothApis.dll) ----
@@ -430,7 +510,7 @@ $^F4:: {
 ; Show status on startup
 statusMsg := "Brightness Control Script Active`n"
 statusMsg .= "External KB: " (IsExternalKeyboardConnected() ? "Yes" : "No") "`n"
-statusMsg .= "External Monitor: Secondary (DDC/CI)`n"
+statusMsg .= "External Monitor: " externalBrightness "% (DDC/CI)`n"
 statusMsg .= "Headphones: " (IsBtHeadphonesConnected() ? "Connected" : "Disconnected")
 
 LogMessage("=== STARTUP STATUS ===")
@@ -439,3 +519,11 @@ LogMessage("======================")
 
 ToolTip(statusMsg)
 SetTimer(() => ToolTip(), -4000)
+
+; Keep the external monitor at the saved level (see EXTERNAL_SETTINGS_FILE).
+; Unlock notifications go to a window, so register the script's hidden one.
+DllCall("Wtsapi32\WTSRegisterSessionNotification", "Ptr", A_ScriptHwnd, "UInt", NOTIFY_FOR_THIS_SESSION)
+OnMessage(WM_WTSSESSION_CHANGE, OnSessionChange)
+OnMessage(WM_POWERBROADCAST, OnPowerBroadcast)
+OnMessage(WM_DISPLAYCHANGE, OnDisplayChange)
+ScheduleExternalMonitorRestore("startup")

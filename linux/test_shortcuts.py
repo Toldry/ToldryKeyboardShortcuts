@@ -2,7 +2,11 @@
 """Unit tests for the pure parts of shortcuts.py:  python3 linux/test_shortcuts.py"""
 
 import configparser
+import subprocess
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
 import shortcuts
 
@@ -151,6 +155,98 @@ class DdcutilTests(unittest.TestCase):
     def test_parse_detect_buses(self):
         self.assertEqual(shortcuts.parse_ddcutil_detect_buses(SAMPLE_DDCUTIL_DETECT),
                          {1: 7, 2: 9})
+
+
+    def test_parse_getvcp_brief_percent(self):
+        self.assertEqual(shortcuts.parse_getvcp_brief_percent("VCP 10 C 7 100\n"), 7)
+        self.assertEqual(shortcuts.parse_getvcp_brief_percent("VCP 10 C 40 80"), 50)
+        self.assertIsNone(shortcuts.parse_getvcp_brief_percent("Display not found"))
+        self.assertIsNone(shortcuts.parse_getvcp_brief_percent(""))
+
+
+    def test_saved_level_survives_reboot(self):
+        # XDG_RUNTIME_DIR is a tmpfs emptied at every reboot; ~/.local/state is not.
+        self.assertEqual(shortcuts.MONITOR_BRIGHTNESS_STATE_FILE.parent, shortcuts.STATE_DIR)
+
+
+class WatcherActionTests(unittest.TestCase):
+    def test_keyboard_hotplug(self):
+        line = "UDEV  [1234.567890] add      /devices/pci0000:00/usb1/1-2/input/input30 (input)"
+        self.assertEqual(shortcuts.watcher_action("input", line), shortcuts.WATCH_KEYBOARDS)
+        header = "UDEV - the event which udev sends out after rule processing"
+        self.assertIsNone(shortcuts.watcher_action("input", header))
+
+    def test_monitor_hotplug(self):
+        line = "UDEV  [1234.567890] change   /devices/pci0000:00/0000:00:02.0/drm/card1 (drm)"
+        self.assertEqual(shortcuts.watcher_action("drm", line), shortcuts.RESTORE_MONITOR)
+        unplug = "UDEV  [1234.567890] remove   /devices/pci0000:00/0000:00:02.0/drm/card1 (drm)"
+        self.assertIsNone(shortcuts.watcher_action("drm", unplug))
+
+    def test_unlock_and_not_lock(self):
+        unlock = "/org/gnome/ScreenSaver: org.gnome.ScreenSaver.ActiveChanged (false,)"
+        lock = "/org/gnome/ScreenSaver: org.gnome.ScreenSaver.ActiveChanged (true,)"
+        self.assertEqual(shortcuts.watcher_action("screensaver", unlock),
+                         shortcuts.RESTORE_MONITOR)
+        self.assertIsNone(shortcuts.watcher_action("screensaver", lock))
+
+    def test_resume_and_not_suspend(self):
+        resume = "/org/freedesktop/login1: org.freedesktop.login1.Manager.PrepareForSleep (false,)"
+        suspend = "/org/freedesktop/login1: org.freedesktop.login1.Manager.PrepareForSleep (true,)"
+        self.assertEqual(shortcuts.watcher_action("login1", resume), shortcuts.RESTORE_MONITOR)
+        self.assertIsNone(shortcuts.watcher_action("login1", suspend))
+
+
+def ddcutil_result(stdout: str = "", returncode: int = 0) -> subprocess.CompletedProcess:
+    return subprocess.CompletedProcess([], returncode, stdout=stdout, stderr="")
+
+
+class RestoreMonitorBrightnessTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        for name, path in {
+            "STATE_DIR": root / "state",
+            "RUNTIME_DIR": root / "runtime",
+            "MONITOR_BRIGHTNESS_STATE_FILE": root / "state" / "monitor-brightness",
+            "MONITOR_APPLIED_STATE_FILE": root / "runtime" / "monitor-brightness-applied",
+            "MONITOR_APPLY_LOCK_FILE": root / "runtime" / "monitor-brightness.lock",
+        }.items():
+            patcher = mock.patch.object(shortcuts, name, path)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        (root / "state").mkdir()
+        for patcher in (mock.patch.object(shortcuts.shutil, "which", return_value="/usr/bin/x"),
+                        mock.patch.object(shortcuts.time, "sleep")):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.config = make_config()
+
+    def restore_with(self, *results):
+        with mock.patch.object(shortcuts, "run_ddcutil", side_effect=list(results)) as ddcutil:
+            shortcuts.restore_monitor_brightness(self.config)
+        return [call.args[1:] for call in ddcutil.call_args_list]
+
+    def test_sets_saved_level_when_monitor_drifted(self):
+        shortcuts.MONITOR_BRIGHTNESS_STATE_FILE.write_text("80")
+        calls = self.restore_with(ddcutil_result("VCP 10 C 7 100"), ddcutil_result())
+        self.assertEqual(calls, [("getvcp", "10", "--brief"),
+                                 ("setvcp", "10", "80", "--noverify")])
+        self.assertEqual(shortcuts.MONITOR_APPLIED_STATE_FILE.read_text(), "80")
+
+    def test_leaves_monitor_alone_when_already_right(self):
+        shortcuts.MONITOR_BRIGHTNESS_STATE_FILE.write_text("80")
+        calls = self.restore_with(ddcutil_result("VCP 10 C 80 100"))
+        self.assertEqual(calls, [("getvcp", "10", "--brief")])
+
+    def test_retries_while_monitor_wakes_up(self):
+        shortcuts.MONITOR_BRIGHTNESS_STATE_FILE.write_text("55")
+        calls = self.restore_with(ddcutil_result("", returncode=1),
+                                  ddcutil_result("VCP 10 C 30 100"), ddcutil_result())
+        self.assertEqual(calls[-1], ("setvcp", "10", "55", "--noverify"))
+
+    def test_nothing_saved_means_no_ddc_traffic(self):
+        self.assertEqual(self.restore_with(), [])
 
 
 if __name__ == "__main__":

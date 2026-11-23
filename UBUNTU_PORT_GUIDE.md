@@ -34,7 +34,15 @@ flowchart LR
     gsd -->|"shortcuts.py toggle-dark-mode"| gsettings["gsettings<br/>color-scheme, gtk-theme, icon-theme"]
     udev["udev input events<br/>(keyboard plugged/unplugged)"] --> watcher["shortcuts.py watch-keyboards<br/>(systemd user service)"]
     watcher -->|"bind / unbind Ctrl+F1..F4"| gsd
+    events["login, unlock, resume,<br/>monitor plugged in"] --> watcher
+    watcher -->|"shortcuts.py restore-monitor-brightness"| ddcutil
 ```
+
+The watcher also keeps the external monitor at the last Ctrl+F3/F4 level. That
+level is saved in `~/.local/state/toldry-shortcuts/monitor-brightness`, so it
+survives a reboot. After login, unlock, resume from sleep and plugging the
+monitor in, the watcher reads the monitor's brightness and sets it back if it
+changed. Some monitors lower their own brightness when the signal comes back.
 
 **Why the watcher?** AutoHotkey intercepts the key, checks for an external
 keyboard, and re-sends the key if there is none. On Wayland, an app can't
@@ -161,6 +169,7 @@ Edit `~/.config/toldry-shortcuts/config.ini`:
 | `[keyboards] ignore_names` | empty | Name fragments to never count as an external keyboard |
 | `[brightness] laptop_levels_percent` | `0, 1, 2, 3, 4, 5, 10, 15, 20, 25, 50, 75, 100` | Levels Ctrl+F1/F2 step through |
 | `[brightness] monitor_step_percent` | `25` | Step for Ctrl+F3/F4 |
+| `[brightness] restore_monitor_brightness` | `yes` | Set the monitor back to the last Ctrl+F3/F4 level after login, unlock, resume and hotplug |
 | `[notifications] duration_ms` | `1000` | How long feedback banners stay up |
 | `[brightness] backlight_device` | all | One directory name in `/sys/class/backlight` to use instead of all of them |
 | `[brightness] ddcutil_args` | `--display 1` | Which monitor `ddcutil` talks to |
@@ -195,8 +204,8 @@ Test with `ddcutil getvcp 10 --sleep-multiplier 0.3`. If you get errors or
 missed changes, go back up.
 
 After changing `[bindings]`, re-run `python3 linux/shortcuts.py install`.
-Other settings apply on the next key press. For `[keyboards]`, restart the
-watcher:
+Other settings apply on the next key press. For `[keyboards]` and
+`restore_monitor_brightness`, restart the watcher:
 
 ```bash
 systemctl --user restart toldry-shortcuts-watcher.service
@@ -212,7 +221,12 @@ journalctl --user -u toldry-shortcuts-watcher.service
 ```
 
 You can also run any action by hand, e.g.
-`python3 linux/shortcuts.py monitor-brightness up`.
+`python3 linux/shortcuts.py monitor-brightness up` or
+`python3 linux/shortcuts.py restore-monitor-brightness`.
+
+Each restore is logged with the level the monitor was at, for example
+`External monitor was at 7%, restored the saved 80%`, which shows whether
+something lowered it.
 
 The log is cleared each time the watcher starts (each login), like
 `brightness_control.log` on Windows.
@@ -220,11 +234,12 @@ The log is cleared each time the watcher starts (each login), like
 ## Differences from the Windows version
 
 - **External monitor brightness** is still tracked by the script rather than
-  read back on every press, because DDC/CI reads are slow. Unlike the AHK
-  version, which always started at 50%, the first press after login reads the
-  monitor's real value, so it starts in sync. If you change brightness with
-  the monitor's own buttons, the tracked value drifts until the next login,
-  just as on Windows.
+  read back on every press, because DDC/CI reads are slow. The level is saved
+  across reboots, and the very first press (before anything is saved) reads
+  the monitor's real value. If you change brightness with the monitor's own
+  buttons, the next unlock or login sets it back to the last Ctrl+F3/F4 level.
+  Press Ctrl+F3/F4 once to save a new one, or set
+  `restore_monitor_brightness = no`.
 - **Laptop brightness steps through levels** (0, 5, 10, 15, 20, 25, 50, 75,
   100 by default) instead of fixed ±25 steps, for finer control when dim.
 - **Laptop brightness never goes fully to 0.** At 0% the script writes the

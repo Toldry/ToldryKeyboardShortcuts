@@ -44,7 +44,9 @@ STATE_DIR = _xdg_dir("XDG_STATE_HOME", Path.home() / ".local" / "state") / APP_I
 LOG_FILE = STATE_DIR / "shortcuts.log"
 SAVED_SETTINGS_FILE = STATE_DIR / "saved-settings.ini"
 RUNTIME_DIR = _xdg_dir("XDG_RUNTIME_DIR", STATE_DIR / "runtime") / APP_ID
-MONITOR_BRIGHTNESS_STATE_FILE = RUNTIME_DIR / "monitor-brightness"  # Target level
+# The level Ctrl+F3/F4 last chose. It lives in STATE_DIR, not RUNTIME_DIR, so
+# it survives a reboot and the watcher can set it again after login.
+MONITOR_BRIGHTNESS_STATE_FILE = STATE_DIR / "monitor-brightness"
 MONITOR_APPLIED_STATE_FILE = RUNTIME_DIR / "monitor-brightness-applied"
 MONITOR_APPLY_LOCK_FILE = RUNTIME_DIR / "monitor-brightness.lock"
 MONITOR_BUS_CACHE_FILE = RUNTIME_DIR / "monitor-i2c-bus"
@@ -59,6 +61,11 @@ DDC_VCP_BRIGHTNESS = "10"
 MONITOR_BRIGHTNESS_FALLBACK = 50  # Used when the monitor's current value can't be read
 KEYBOARD_POLL_SECONDS = 2.0
 KEYBOARD_EVENT_DEBOUNCE_SECONDS = 0.5
+# After an unlock, resume or monitor hotplug, wait this long before setting the
+# monitor's brightness again: a monitor that is still waking up ignores DDC/CI.
+MONITOR_RESTORE_DELAY_SECONDS = 3.0
+MONITOR_RESTORE_ATTEMPTS = 4
+MONITOR_RESTORE_RETRY_SECONDS = 3.0
 
 MEDIA_KEYS_SCHEMA = "org.gnome.settings-daemon.plugins.media-keys"
 CUSTOM_KEYBINDING_SCHEMA = MEDIA_KEYS_SCHEMA + ".custom-keybinding"
@@ -88,6 +95,10 @@ duration_ms = 1000
 # sensitive to changes.
 laptop_levels_percent = 0, 1, 2, 3, 4, 5, 10, 15, 20, 25, 50, 75, 100
 monitor_step_percent = 25
+# Set the external monitor back to the last Ctrl+F3/F4 level after login,
+# unlock, resume from sleep and plugging the monitor in. Some monitors (and
+# other software) change their brightness then.
+restore_monitor_brightness = yes
 # Name of a directory in /sys/class/backlight. Empty = set all of them.
 backlight_device =
 # Extra arguments for every ddcutil call. `--display N` picks the monitor; it is
@@ -445,17 +456,30 @@ def run_ddcutil(config: configparser.ConfigParser, *args: str,
     return result
 
 
-def read_monitor_brightness(config: configparser.ConfigParser) -> int:
+def parse_getvcp_brief_percent(output: str) -> int | None:
+    """Percent from `ddcutil getvcp 10 --brief`, which prints "VCP 10 C 50 100"."""
+    fields = output.split()
+    if len(fields) >= 5 and fields[3].isdigit() and fields[4].isdigit():
+        return round(int(fields[3]) * 100 / max(1, int(fields[4])))
+    return None
+
+
+def query_monitor_brightness(config: configparser.ConfigParser) -> int | None:
+    """The monitor's brightness in percent, or None when it doesn't answer."""
     try:
         result = run_ddcutil(config, "getvcp", DDC_VCP_BRIGHTNESS, "--brief")
-        # Brief output looks like: "VCP 10 C 50 100" (current value, then maximum)
-        fields = result.stdout.split()
-        if result.returncode == 0 and len(fields) >= 5 and fields[3].isdigit():
-            return round(int(fields[3]) * 100 / max(1, int(fields[4])))
-        logger.info("Couldn't parse ddcutil getvcp output: %r %r", result.stdout, result.stderr)
     except subprocess.TimeoutExpired:
         logger.info("ddcutil getvcp timed out")
-    return MONITOR_BRIGHTNESS_FALLBACK
+        return None
+    percent = parse_getvcp_brief_percent(result.stdout) if result.returncode == 0 else None
+    if percent is None:
+        logger.info("Couldn't parse ddcutil getvcp output: %r %r", result.stdout, result.stderr)
+    return percent
+
+
+def read_monitor_brightness(config: configparser.ConfigParser) -> int:
+    percent = query_monitor_brightness(config)
+    return MONITOR_BRIGHTNESS_FALLBACK if percent is None else percent
 
 
 def _read_int_file(path: Path) -> int | None:
@@ -470,6 +494,7 @@ def adjust_monitor_brightness(config: configparser.ConfigParser, delta_percent: 
     if not shutil.which("ddcutil"):
         raise RuntimeError("ddcutil is not installed: sudo apt install ddcutil")
     RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
     # The target level is tracked in a file (like the AHK script's in-memory
     # variable) because DDC/CI reads are slow. Updating it is instant, so the
     # notification never waits for the monitor.
@@ -507,6 +532,49 @@ def adjust_monitor_brightness(config: configparser.ConfigParser, delta_percent: 
             raise RuntimeError(f"ddcutil failed: {result.stderr.strip() or result.stdout.strip()}")
         MONITOR_APPLIED_STATE_FILE.write_text(str(target_percent))
     logger.info("External monitor brightness set to: %d", target_percent)
+
+
+def restore_monitor_brightness(config: configparser.ConfigParser) -> None:
+    """Set the monitor back to the last level Ctrl+F3/F4 chose, if it drifted.
+
+    The watcher runs this after login, unlock, resume and monitor hotplug. It
+    reads the monitor first, so it only writes when something changed the
+    level, and the log says what the monitor was at.
+    """
+    target_percent = _read_int_file(MONITOR_BRIGHTNESS_STATE_FILE)
+    if target_percent is None:
+        logger.info("No saved external monitor brightness yet - nothing to restore")
+        return
+    if not shutil.which("ddcutil"):
+        logger.info("ddcutil is not installed - can't restore monitor brightness")
+        return
+    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    with open(MONITOR_APPLY_LOCK_FILE, "a") as apply_lock:
+        fcntl.flock(apply_lock, fcntl.LOCK_EX)
+        # A key press while we waited for the lock may have changed the target.
+        target_percent = _read_int_file(MONITOR_BRIGHTNESS_STATE_FILE)
+        if target_percent is None:
+            return
+        for attempt in range(1, MONITOR_RESTORE_ATTEMPTS + 1):
+            current_percent = query_monitor_brightness(config)
+            if current_percent == target_percent:
+                logger.info("External monitor already at the saved %d%%", target_percent)
+                MONITOR_APPLIED_STATE_FILE.write_text(str(target_percent))
+                return
+            if current_percent is not None:
+                result = run_ddcutil(
+                    config, "setvcp", DDC_VCP_BRIGHTNESS, str(target_percent), "--noverify"
+                )
+                if result.returncode == 0:
+                    MONITOR_APPLIED_STATE_FILE.write_text(str(target_percent))
+                    logger.info("External monitor was at %d%%, restored the saved %d%%",
+                                current_percent, target_percent)
+                    return
+                logger.info("ddcutil setvcp failed: %s", result.stderr.strip())
+            if attempt < MONITOR_RESTORE_ATTEMPTS:
+                time.sleep(MONITOR_RESTORE_RETRY_SECONDS)
+        logger.info("Couldn't restore external monitor brightness after %d attempts",
+                    MONITOR_RESTORE_ATTEMPTS)
 
 
 # ---------------------------------------------------------------------------
@@ -761,11 +829,78 @@ def _raise_system_exit(signal_number, _frame) -> None:
     raise SystemExit(128 + signal_number)
 
 
+# What the watcher listens to, as (kind, command). Each prints one line per event.
+WATCHER_EVENT_COMMANDS = (
+    ("input", ["udevadm", "monitor", "--udev", "--subsystem-match=input"]),
+    ("drm", ["udevadm", "monitor", "--udev", "--subsystem-match=drm"]),
+    ("screensaver", ["gdbus", "monitor", "--session", "--dest", "org.gnome.ScreenSaver"]),
+    ("login1", ["gdbus", "monitor", "--system", "--dest", "org.freedesktop.login1",
+                "--object-path", "/org/freedesktop/login1"]),
+)
+WATCH_KEYBOARDS = "keyboards"
+RESTORE_MONITOR = "restore-monitor"
+
+
+def watcher_action(kind: str, line: str) -> str | None:
+    """What one line of a WATCHER_EVENT_COMMANDS process asks the watcher to do.
+
+    WATCH_KEYBOARDS re-checks for an external keyboard; RESTORE_MONITOR sets
+    the external monitor's brightness again.
+    """
+    is_udev_event = re.match(r"UDEV\s+\[", line) is not None
+    if kind == "input":
+        return WATCH_KEYBOARDS if is_udev_event else None
+    if kind == "drm":
+        # A monitor plugged in, or woken up: the GPU reports a hotplug "change".
+        return RESTORE_MONITOR if is_udev_event and re.search(r"\b(add|change)\b", line) else None
+    if kind == "screensaver":
+        # GNOME Shell's lock screen went away: "...ActiveChanged (false,)"
+        return RESTORE_MONITOR if "ActiveChanged (false" in line else None
+    if kind == "login1":
+        # Resumed from suspend: "...Manager.PrepareForSleep (false,)"
+        return RESTORE_MONITOR if "PrepareForSleep (false" in line else None
+    return None
+
+
+@dataclass
+class _EventSource:
+    kind: str
+    process: subprocess.Popen
+    pending: bytes = b""
+
+    def read_lines(self) -> list[str] | None:
+        """Complete lines that arrived, or None once the process has exited."""
+        chunk = os.read(self.process.stdout.fileno(), 65536)
+        if not chunk:
+            return None
+        self.pending += chunk
+        *lines, self.pending = self.pending.split(b"\n")
+        return [line.decode(errors="replace") for line in lines]
+
+
+def _start_event_sources(restore_enabled: bool) -> list[_EventSource]:
+    sources = []
+    for kind, command in WATCHER_EVENT_COMMANDS:
+        if kind != "input" and not restore_enabled:
+            continue
+        if not shutil.which(command[0]):
+            logger.info("%s not found - not watching %s events", command[0], kind)
+            continue
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        sources.append(_EventSource(kind, process))
+    return sources
+
+
 def watch_keyboards(config: configparser.ConfigParser) -> None:
-    """Keep the brightness shortcuts bound only while an external keyboard is attached."""
+    """Keep the brightness shortcuts bound only while an external keyboard is attached.
+
+    It also sets the external monitor back to the last Ctrl+F3/F4 level after
+    login, unlock, resume and monitor hotplug (`restore_monitor_brightness`).
+    """
     signal.signal(signal.SIGTERM, _raise_system_exit)
     logger.info("=== Keyboard watcher started ===")
     logger.info("Script: %s", SCRIPT_PATH)
+    restore_enabled = config["brightness"].getboolean("restore_monitor_brightness")
 
     last_connected_state: bool | None = None
 
@@ -780,32 +915,60 @@ def watch_keyboards(config: configparser.ConfigParser) -> None:
             last_connected_state = connected
 
     selector = selectors.DefaultSelector()
-    udev_monitor = None
+    sources: list[_EventSource] = []
+    restore_process: subprocess.Popen | None = None
+    # When to set the monitor's brightness again; pushed back by each new event
+    # so that a burst (resume, then unlock, then hotplug) costs one restore.
+    restore_due_at = time.monotonic() if restore_enabled else None  # Login / reboot
     try:
         refresh()
         startup_status = f"External KB: {'Yes' if last_connected_state else 'No'}"
         logger.info("=== STARTUP STATUS === %s", startup_status)
         notify(f"Keyboard shortcuts active\n{startup_status}", tag="startup", duration_ms=4000)
 
-        if shutil.which("udevadm"):
-            # udev events wake us immediately on hotplug; polling is only a fallback.
-            udev_monitor = subprocess.Popen(
-                ["udevadm", "monitor", "--udev", "--subsystem-match=input"],
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            )
-            selector.register(udev_monitor.stdout, selectors.EVENT_READ)
+        # Events wake us immediately; keyboard polling is only a fallback.
+        sources = _start_event_sources(restore_enabled)
+        for source in sources:
+            selector.register(source.process.stdout, selectors.EVENT_READ, source)
 
         while True:
-            ready = selector.select(timeout=KEYBOARD_POLL_SECONDS)
-            for key, _events in ready:
-                if not os.read(key.fd, 65536):  # udevadm exited: keep polling only
+            timeout = KEYBOARD_POLL_SECONDS
+            if restore_due_at is not None:
+                timeout = min(timeout, max(0.0, restore_due_at - time.monotonic()))
+            keyboards_changed = False
+            for key, _events in selector.select(timeout=timeout):
+                lines = key.data.read_lines()
+                if lines is None:  # The event process exited: stop listening to it
                     selector.unregister(key.fileobj)
-            if ready:
+                    continue
+                for line in lines:
+                    action = watcher_action(key.data.kind, line)
+                    if action == WATCH_KEYBOARDS:
+                        keyboards_changed = True
+                    elif action == RESTORE_MONITOR and restore_enabled:
+                        logger.info("Monitor brightness restore requested (%s): %s",
+                                    key.data.kind, line.strip())
+                        restore_due_at = time.monotonic() + MONITOR_RESTORE_DELAY_SECONDS
+            if keyboards_changed:
                 time.sleep(KEYBOARD_EVENT_DEBOUNCE_SECONDS)  # One plug-in = many events
             refresh()
+
+            restore_running = restore_process is not None and restore_process.poll() is None
+            if (restore_due_at is not None and time.monotonic() >= restore_due_at
+                    and not restore_running):
+                restore_due_at = None
+                # A separate process, because DDC/CI is slow and retries sleep:
+                # the keyboard watcher keeps reacting meanwhile.
+                restore_process = subprocess.Popen(
+                    [sys.executable, str(SCRIPT_PATH), "restore-monitor-brightness"],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            elif restore_due_at is not None and restore_running:
+                restore_due_at = time.monotonic() + 1.0  # Try again once it is done
     finally:
-        if udev_monitor:
-            udev_monitor.terminate()
+        for source in sources:
+            source.process.terminate()
         # Without the watcher nothing would ever re-enable pass-through, so
         # leave the keys unbound, like when the AHK script isn't running.
         try:
@@ -844,7 +1007,7 @@ def print_status(config: configparser.ConfigParser) -> None:
         tracked = MONITOR_BRIGHTNESS_STATE_FILE.read_text().strip()
     except OSError:
         tracked = "not tracked yet (read from the monitor on first key press)"
-    print(f"External monitor brightness: {tracked}")
+    print(f"External monitor brightness (saved): {tracked}")
     print(f"Color scheme: {gsettings_get(INTERFACE_SCHEMA, 'color-scheme')}")
     for shortcut in SHORTCUTS:
         binding = gsettings_get(shortcut.schema_with_path, "binding")
@@ -866,6 +1029,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
         brightness_parser = subparsers.add_parser(name, help=f"Step {name.replace('-', ' ')}")
         brightness_parser.add_argument("direction", choices=("up", "down"))
     subparsers.add_parser("toggle-dark-mode", help="Toggle system dark/light mode")
+    subparsers.add_parser("restore-monitor-brightness",
+                          help="Set the external monitor to the last Ctrl+F3/F4 level")
     subparsers.add_parser("watch-keyboards", help="Background watcher (run by systemd)")
     close_parser = subparsers.add_parser("close-notification", help=argparse.SUPPRESS)
     close_parser.add_argument("tag")
@@ -890,6 +1055,8 @@ def main() -> None:
             adjust_monitor_brightness(config, step if arguments.direction == "up" else -step)
         elif arguments.command == "toggle-dark-mode":
             toggle_dark_mode()
+        elif arguments.command == "restore-monitor-brightness":
+            restore_monitor_brightness(config)
         elif arguments.command == "close-notification":
             close_notification_when_due(arguments.tag)
         elif arguments.command == "watch-keyboards":

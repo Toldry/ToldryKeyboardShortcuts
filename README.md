@@ -27,7 +27,7 @@ The brightness hotkeys (Ctrl+F1–F4) only adjust brightness when an external ke
 
 ## Notes
 
-- External monitor brightness is tracked in memory starting at 50% on each launch. If the monitor's actual brightness differs, press Ctrl+F3/F4 a few times to sync.
+- External monitor brightness is tracked rather than read back, and saved to `%APPDATA%\BrightnessControl\settings.ini` so it survives a restart (50% until the first Ctrl+F3/F4 press). After unlock, resume from sleep, the monitor reconnecting and the script starting, it sets the monitor back to that saved level, since some monitors lower their own brightness then. If you change brightness with the monitor's own buttons, press Ctrl+F3/F4 once to save a new level.
 - Laptop brightness is read live from Windows WMI.
 - Dark mode toggles both the app and system theme, then broadcasts the change so open apps update immediately.
 - **Bluetooth headphones:** Ctrl+F11 disconnects by disabling the headset's audio services (A2DP stereo + Hands-Free) and reconnects by re-enabling them. No admin rights needed. This works at the Bluetooth-stack level because the audio-driver route is ignored on laptops with Intel Smart Sound Bluetooth audio offload.
