@@ -41,6 +41,7 @@ Windows needs only Python 3.8+; it uses a low-level mouse hook.
 Press Ctrl+C to stop; a statistics block for Claude is printed on exit.
 """
 import argparse
+import errno
 import json
 import math
 import os
@@ -479,12 +480,12 @@ def run_linux(config, statistics, observe):
             device.close()
         return None
 
-    def serve(physical):
+    def serve(physical, on_ready):
         core = DebounceCore(config, statistics.record)
         virtual = None
         if not observe:
-            virtual = evdev.UInput.from_device(physical,
-                                               name=VIRTUAL_DEVICE_NAME)
+            # Grab first: if another program holds the mouse, fail before
+            # a virtual mouse is created.
             physical.grab()  # the desktop now sees only the virtual mouse
 
         def emit(outputs):
@@ -497,6 +498,10 @@ def run_linux(config, statistics, observe):
                 virtual.syn()
 
         try:
+            if not observe:
+                virtual = evdev.UInput.from_device(physical,
+                                                   name=VIRTUAL_DEVICE_NAME)
+            on_ready()
             while True:
                 deadline = core.next_deadline()
                 timeout = None
@@ -535,23 +540,42 @@ def run_linux(config, statistics, observe):
             if virtual is not None:
                 emit(core.release_everything())
                 virtual.close()
+            if not observe:
                 try:
                     physical.ungrab()
                 except OSError:
                     pass  # device already gone
 
+    state = {"last_problem": None}
     while True:
         physical = find_device()
         if physical is None:
             time.sleep(RESCAN_INTERVAL_SECONDS)
             continue
         verb = "observing" if observe else "debouncing"
-        print(f"{verb} {physical.name} ({physical.path})", flush=True)
-        statistics.listening = True
+
+        def on_ready():
+            print(f"{verb} {physical.name} ({physical.path})", flush=True)
+            statistics.listening = True
+            state["last_problem"] = None
+
         try:
-            serve(physical)
-        except OSError:
-            print("device disconnected, waiting for it", flush=True)
+            serve(physical, on_ready)
+        except OSError as error:
+            if error.errno == errno.EBUSY:
+                problem = (
+                    f"{physical.path} is grabbed by another program, most "
+                    "likely an older mouse filter. Stop it, and this one "
+                    "starts by itself. To see who holds it:\n"
+                    f"  sudo fuser -v {physical.path}")
+            elif error.errno == errno.ENODEV:
+                problem = "the mouse disconnected; waiting for it"
+            else:
+                problem = f"lost the mouse ({error}); retrying"
+            if problem != state["last_problem"]:  # once, not every retry
+                print(problem, flush=True)
+            state["last_problem"] = problem
+            physical.close()
             time.sleep(RESCAN_INTERVAL_SECONDS)
 
 

@@ -228,6 +228,57 @@ if __name__ == "__main__":
 class LinuxBackendWithFakeEvdev(unittest.TestCase):
     """Runs run_linux() against a stand-in for python-evdev."""
 
+    def test_busy_device_names_the_cause_once(self):
+        import contextlib
+        import errno
+        import io
+        import sys
+        import time
+        import types
+
+        class Busy:
+            name, path, fd = "Logitech MX Vertical", "/dev/input/event26", 9
+
+            def capabilities(self):
+                return {1: [272], 2: [0, 1]}
+
+            def grab(self):
+                raise OSError(errno.EBUSY, "Device or resource busy")
+
+            def close(self):
+                pass
+
+        calls = {"n": 0}
+
+        def list_devices():
+            calls["n"] += 1
+            if calls["n"] > 3:
+                raise KeyboardInterrupt
+            return ["/dev/input/event26"]
+
+        fake = types.ModuleType("evdev")
+        fake.ecodes = types.SimpleNamespace(
+            EV_SYN=0, EV_KEY=1, EV_REL=2, SYN_REPORT=0, REL_X=0, REL_Y=1,
+            BTN_LEFT=272, BTN_RIGHT=273, BTN_MIDDLE=274)
+        fake.list_devices = list_devices
+        fake.InputDevice = lambda path: Busy()
+        sys.modules["evdev"] = fake
+        real_sleep = time.sleep
+        time.sleep = lambda seconds: None
+        out = io.StringIO()
+        try:
+            stats = md.Statistics(make_config(), "filter", "test")
+            with contextlib.redirect_stdout(out), \
+                    self.assertRaises(KeyboardInterrupt):
+                md.run_linux(make_config(), stats, observe=False)
+        finally:
+            time.sleep = real_sleep
+            del sys.modules["evdev"]
+        text = out.getvalue()
+        self.assertEqual(text.count("grabbed by another program"), 1)
+        self.assertIn("sudo fuser -v /dev/input/event26", text)
+        self.assertNotIn("debouncing", text)
+
     def test_drag_with_chatter_reaches_desktop_as_one_press(self):
         import select
         import sys
