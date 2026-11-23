@@ -392,8 +392,11 @@ class Statistics:
             (decision["button"], decision["context"] or "unknown"), {})
         per_context[bucket_ms] = per_context.get(bucket_ms, 0) + 1
         window = decision["window_ms"] or 0
+        # A gap just longer than the window: chatter that may have slipped
+        # through. (Gaps inside it that passed were confirmed real clicks.)
         is_near_miss = (decision["outcome"] == "passed" and window > 0
-                        and decision["gap_ms"] < window * NEAR_MISS_FACTOR)
+                        and window <= decision["gap_ms"]
+                        < window * NEAR_MISS_FACTOR)
         if is_near_miss:
             self.near_misses.append(decision)
             self.near_misses = self.near_misses[-RECENT_DECISIONS_KEPT:]
