@@ -296,7 +296,10 @@ textarea.report {
     <div class="panel stack">
       <div class="row" style="justify-content:space-between">
         <h2>Results</h2>
-        <button id="btn-analyse" class="primary">Update results and report</button>
+        <div class="row">
+          <span class="status" id="analyse-status"></span>
+          <button id="btn-analyse" class="primary">Update results and report</button>
+        </div>
       </div>
       <div class="figures">
         <div class="figure"><span class="label">Breaks</span><b id="fig-breaks">–</b><small>while holding</small></div>
@@ -1624,7 +1627,8 @@ function buildReport(a) {
   const medianInterval = quantile(a.intervals, 0.5);
   const filterState = $("filter-state").value;
   const lines = [
-    `When: ${new Date().toISOString().slice(0, 16).replace("T", " ")} UTC · ${env.os}, ${env.browser}, scale ${env.dpr}`,
+    `When: ${new Date().toISOString().slice(0, 19).replace("T", " ")} UTC · ${env.os}, ${env.browser}, scale ${env.dpr}` +
+      ` · ${recorder.events.length} events`,
     `Mouse: ${$("mouse-name").value} · link: ${$("mouse-link").value} · filter: ${filterState}` +
       (filterState === "loaded" && loadedConfig ? ` (${configLine(loadedConfig)})` : ""),
     `Courses: ${kindCourses}`,
@@ -1648,6 +1652,7 @@ function buildReport(a) {
   ];
   if (a.scoreLoaded) lines.push(`Loaded config (${configLine(loadedConfig)}): ${scoreLine(a.scoreLoaded)}`);
   for (const note of s.notes) lines.push(`Note: ${note}`);
+  if (pageErrors.length) lines.push(`Page errors: ${pageErrors.slice(-5).join(" | ")}`);
   const userNotes = $("notes").value.trim();
   if (userNotes) lines.push(`User notes: ${userNotes}`);
 
@@ -1728,7 +1733,30 @@ function drawHistogram(a) {
   svg.innerHTML = parts.join("");
 }
 
+// Errors anywhere on the page are kept so a broken update says why, and the
+// report carries them to Claude.
+const pageErrors = [];
+window.addEventListener("error", (event) => {
+  pageErrors.push(`${event.message} (line ${event.lineno})`);
+});
+
 function analyseAndRender() {
+  const status = $("analyse-status");
+  try {
+    renderAnalysis();
+    const count = recorder.events.length.toLocaleString();
+    status.className = "status good";
+    status.textContent = `Updated ${new Date().toLocaleTimeString()} · ${count} events`;
+  } catch (error) {
+    status.className = "status bad";
+    status.textContent = `Update failed: ${error.message}. The report box shows the details for Claude.`;
+    $("report").value = ["MOUSE CHATTER COURSES: the report could not be built", String(error.stack || error),
+                         `events: ${recorder.events.length}`, `page errors: ${pageErrors.join(" | ") || "none"}`,
+                         `browser: ${navigator.userAgent}`].join("\n");
+  }
+}
+
+function renderAnalysis() {
   const a = analyse();
   const s = a.suggestion.config.buttons.left;
   $("fig-breaks").textContent = String(a.chatter.length);
