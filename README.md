@@ -4,6 +4,10 @@ AutoHotkey v2 script with hotkeys for screen brightness, system dark/light mode,
 
 On Ubuntu, see [UBUNTU_PORT_GUIDE.md](UBUNTU_PORT_GUIDE.md) for the Linux port in `linux/`.
 
+For the MX Vertical's chattering left button (drags that break into
+separate clicks), see [mouse/README.md](mouse/README.md): obstacle courses
+that measure the chatter, and a debounce filter for Ubuntu and Windows.
+
 ## Hotkeys
 
 | Key | Action |

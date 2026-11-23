@@ -1,0 +1,1818 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- Offline copy of the Mouse Chatter Courses page. Open it in Firefox,
+     Chrome or Edge; no network is needed except for the fonts. -->
+<title>Mouse Chatter Courses</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: a bench instrument. A live logic-analyser trace of the button runs
+   across the top; course list on the left, the course itself in the middle,
+   results and the paste-back report underneath. */
+:root {
+  --paper: #eef1f4;
+  --panel: #ffffff;
+  --sunk: #e4e9ee;
+  --ink: #16202a;
+  --muted: #586675;
+  --rule: #cfd7df;
+  --accent: #0b7a75;
+  --accent-ink: #ffffff;
+  --break: #c9402b;
+  --intent: #2f62c9;
+  --ok: #2b7d52;
+  --warn: #a86400;
+  --trace-bg: #101820;
+  --trace-grid: #24323f;
+  --trace-line: #3fd0c5;
+  --font-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-data: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  --radius: 6px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #0f151b; --panel: #172029; --sunk: #1d2832; --ink: #dde5ec;
+    --muted: #93a3b2; --rule: #2c3a47; --accent: #3cc4bb; --accent-ink: #062523;
+    --break: #ff7a66; --intent: #86a9ff; --ok: #5fcb8e; --warn: #f0a742;
+    --trace-bg: #0a1015; --trace-grid: #1f2c38; --trace-line: #3fd0c5;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #0f151b; --panel: #172029; --sunk: #1d2832; --ink: #dde5ec;
+  --muted: #93a3b2; --rule: #2c3a47; --accent: #3cc4bb; --accent-ink: #062523;
+  --break: #ff7a66; --intent: #86a9ff; --ok: #5fcb8e; --warn: #f0a742;
+  --trace-bg: #0a1015; --trace-grid: #1f2c38; --trace-line: #3fd0c5;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body {
+  background: var(--paper); color: var(--ink); font-family: var(--font-body);
+  font-size: 15px; line-height: 1.5;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 16px 48px;
+}
+h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; margin: 0; }
+h1 { font-size: 1.7rem; font-weight: 600; letter-spacing: 0.01em; }
+h2 { font-size: 1.25rem; font-weight: 600; }
+h3 { font-size: 1.02rem; font-weight: 600; }
+p { margin: 0; }
+code, .mono { font-family: var(--font-data); font-size: 0.9em; }
+.shell { max-width: 1240px; margin: 0 auto; display: grid; gap: 16px; }
+.label {
+  font-family: var(--font-display); font-size: 0.74rem; font-weight: 600;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted);
+}
+button, select, input, textarea { font: inherit; color: inherit; }
+button {
+  border: 1px solid var(--rule); background: var(--panel); border-radius: var(--radius);
+  padding: 7px 14px; cursor: pointer; font-weight: 500;
+}
+button:hover { border-color: var(--accent); }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
+button:disabled { opacity: 0.5; cursor: default; }
+
+/* Top: title and live trace */
+.top { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 16px; align-items: stretch; }
+.intro { display: grid; gap: 6px; align-content: start; }
+.intro p { color: var(--muted); max-width: 46ch; }
+.scope {
+  background: var(--trace-bg); border-radius: var(--radius); padding: 10px 12px;
+  display: grid; gap: 6px; min-width: 0;
+}
+.scope-head { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.scope-head span { font-family: var(--font-data); font-size: 0.78rem; color: #9fb3c2; }
+.scope-head b { color: #ffd27a; font-weight: 500; }
+#trace { width: 100%; height: 92px; display: block; }
+
+/* Middle: courses and stage */
+.bench { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 16px; align-items: start; }
+.rail { display: grid; gap: 12px; }
+.panel { background: var(--panel); border: 1px solid var(--rule); border-radius: var(--radius); padding: 14px; }
+.course-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.course-list button {
+  width: 100%; text-align: left; border: 0; border-radius: 4px; padding: 7px 8px;
+  display: grid; grid-template-columns: 1.6em minmax(0, 1fr) auto; gap: 6px; align-items: center;
+  background: transparent;
+}
+.course-list button:hover { background: var(--sunk); }
+.course-list button[aria-current="true"] { background: var(--sunk); box-shadow: inset 3px 0 0 var(--accent); }
+.course-list .n { font-family: var(--font-data); color: var(--muted); font-size: 0.8rem; }
+.chip {
+  font-family: var(--font-data); font-size: 0.72rem; padding: 1px 7px; border-radius: 999px;
+  border: 1px solid var(--rule); color: var(--muted); white-space: nowrap;
+}
+.chip.done { color: var(--ok); border-color: currentColor; }
+.chip.partial { color: var(--warn); border-color: currentColor; }
+.session { display: grid; gap: 8px; }
+.session label { display: grid; gap: 2px; font-size: 0.85rem; color: var(--muted); }
+.session input, .session select, .session textarea {
+  background: var(--paper); border: 1px solid var(--rule); border-radius: 4px; padding: 5px 7px;
+  color: var(--ink); width: 100%;
+}
+
+.course { display: grid; gap: 10px; min-width: 0; }
+.course-head { display: flex; justify-content: space-between; align-items: end; gap: 12px; flex-wrap: wrap; }
+.course-head .how { color: var(--muted); max-width: 70ch; }
+.task {
+  font-family: var(--font-data); font-size: 0.92rem; background: var(--sunk); border-radius: 4px;
+  padding: 6px 10px; min-height: 2.3em; display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+}
+.task .progress { margin-left: auto; color: var(--muted); }
+.controls { display: flex; gap: 8px; flex-wrap: wrap; }
+#stage {
+  position: relative; height: 460px; background: var(--panel); border: 1px solid var(--rule);
+  border-radius: var(--radius); overflow: hidden; user-select: none; -webkit-user-select: none;
+  touch-action: none;
+}
+#stage.texty { user-select: text; -webkit-user-select: text; }
+.stage-idle {
+  position: absolute; inset: 0; display: grid; place-content: center; text-align: center; gap: 10px;
+  color: var(--muted); padding: 24px;
+}
+.flash {
+  position: absolute; right: 12px; top: 10px; font-family: var(--font-data); font-size: 0.8rem;
+  padding: 3px 8px; border-radius: 4px; background: var(--break); color: var(--panel);
+  opacity: 0; transition: opacity 0.2s; pointer-events: none;
+}
+.flash.on { opacity: 1; }
+
+/* course pieces */
+.target {
+  position: absolute; width: 58px; height: 58px; border-radius: 50%;
+  border: 3px solid var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent);
+  display: grid; place-items: center; font-family: var(--font-data); font-size: 0.8rem; cursor: pointer;
+}
+.target.hit { border-color: var(--ok); background: color-mix(in srgb, var(--ok) 25%, transparent); }
+.card {
+  position: absolute; width: 150px; padding: 10px 12px; border-radius: 5px; background: var(--panel);
+  border: 1px solid var(--rule); box-shadow: 0 2px 6px rgb(0 0 0 / 0.15); cursor: grab;
+  font-family: var(--font-data); font-size: 0.85rem; z-index: 2;
+}
+.card.held { cursor: grabbing; border-color: var(--accent); box-shadow: 0 6px 18px rgb(0 0 0 / 0.25); }
+.card.dropped { border-style: dashed; border-color: var(--break); }
+.bin {
+  position: absolute; width: 170px; height: 110px; border: 2px dashed var(--accent); border-radius: 8px;
+  display: grid; place-items: center; color: var(--muted); font-size: 0.9rem; text-align: center;
+}
+.bin.over { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.prose {
+  position: absolute; inset: 18px 22px auto 22px; font-size: 1.12rem; line-height: 1.9; max-width: 68ch;
+  cursor: text;
+}
+.prose .goal { text-decoration: underline dotted var(--accent) 2px; text-underline-offset: 5px; }
+.prose .goal.now { background: color-mix(in srgb, var(--accent) 16%, transparent); border-radius: 3px; }
+.prose .goal.got { text-decoration-color: var(--ok); color: var(--ok); }
+.dropzone {
+  position: absolute; left: 22px; right: 22px; bottom: 20px; height: 120px; border: 2px dashed var(--accent);
+  border-radius: 8px; display: grid; place-items: center; color: var(--muted); font-family: var(--font-data);
+}
+.dropzone.over { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.big-button {
+  position: absolute; left: 50%; top: 50%; translate: -50% -50%; width: 190px; height: 190px;
+  border-radius: 50%; border: 4px solid var(--accent); background: var(--sunk);
+  font-family: var(--font-display); font-size: 2.6rem; font-weight: 600; cursor: pointer;
+}
+.big-button small { display: block; font-size: 0.85rem; color: var(--muted); font-family: var(--font-body); }
+.hold-ring { position: absolute; left: 50%; top: 50%; translate: -50% -50%; cursor: pointer; }
+.hold-ring text { font-family: var(--font-data); fill: var(--ink); }
+#track-svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+/* Results */
+.results { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.figures { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.figure { background: var(--sunk); border-radius: 4px; padding: 8px 10px; display: grid; gap: 2px; }
+.figure b { font-family: var(--font-data); font-size: 1.25rem; font-weight: 500; font-variant-numeric: tabular-nums; }
+.figure small { color: var(--muted); font-size: 0.78rem; }
+.hist-wrap { overflow-x: auto; }
+#hist { width: 100%; min-width: 520px; height: auto; display: block; }
+#hist text { font-family: var(--font-data); font-size: 11px; fill: var(--muted); }
+.legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 0.82rem; color: var(--muted); }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+.summary-lines { font-family: var(--font-data); font-size: 0.82rem; white-space: pre-wrap; color: var(--ink); margin: 0; }
+textarea.report {
+  width: 100%; min-height: 220px; font-family: var(--font-data); font-size: 0.75rem; line-height: 1.4;
+  background: var(--paper); color: var(--ink); border: 1px solid var(--rule); border-radius: 4px; padding: 8px;
+}
+.stack { display: grid; gap: 10px; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.status { font-size: 0.85rem; color: var(--muted); }
+.status.good { color: var(--ok); }
+.status.bad { color: var(--break); }
+
+@media (max-width: 900px) {
+  .top, .bench, .results { grid-template-columns: minmax(0, 1fr); }
+  .figures { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+
+
+<div class="shell">
+  <section class="top">
+    <div class="intro">
+      <span class="label">Switch chatter bench</span>
+      <h1>Mouse Chatter Courses</h1>
+      <p>Each course makes you click, hold or drag in a way that a worn switch gets wrong.
+        The page records every press and release in the background. At the end it prints a
+        report to paste to Claude, who tunes the debounce filter from it.</p>
+    </div>
+    <div class="scope" aria-label="Live trace of the left button">
+      <div class="scope-head">
+        <span>LEFT BUTTON · last 4 s · high = pressed</span>
+        <span>suspect gaps in courses: <b id="gap-count">0</b> · last: <b id="gap-last">–</b></span>
+      </div>
+      <canvas id="trace"></canvas>
+    </div>
+  </section>
+
+  <section class="bench">
+    <div class="rail">
+      <div class="panel">
+        <span class="label">Courses</span>
+        <ol class="course-list" id="course-list"></ol>
+      </div>
+      <div class="panel session">
+        <span class="label">This session</span>
+        <label>Mouse <input id="mouse-name" value="Logitech MX Vertical"></label>
+        <label>Connection
+          <select id="mouse-link">
+            <option value="unknown">Not sure</option>
+            <option value="bluetooth">Bluetooth</option>
+            <option value="bolt">Logi Bolt receiver</option>
+            <option value="unifying">Unifying receiver</option>
+            <option value="cable">USB cable</option>
+          </select>
+        </label>
+        <label>Debounce filter running now?
+          <select id="filter-state">
+            <option value="none">No filter</option>
+            <option value="loaded">Yes, mouse_debounce.py with the config loaded below</option>
+            <option value="other">Yes, something else</option>
+          </select>
+        </label>
+        <label>Notes for Claude <textarea id="notes" rows="2" placeholder="e.g. it felt worse with a light grip"></textarea></label>
+      </div>
+    </div>
+
+    <div class="course panel">
+      <div class="course-head">
+        <div class="stack" style="gap:2px">
+          <span class="label" id="course-kicker">Pick a course</span>
+          <h2 id="course-title">Start with course 1</h2>
+          <p class="how" id="course-how">Use your normal grip unless a course asks otherwise. If a drag breaks,
+            press again quickly: the course carries on and counts the break.</p>
+        </div>
+        <div class="controls">
+          <button id="btn-start" class="primary">Start course</button>
+          <button id="btn-skip">Next course</button>
+        </div>
+      </div>
+      <div class="task" id="task"><span id="task-text">Courses take 20 to 60 seconds each. About 6 minutes for all eight.</span><span class="progress" id="task-progress"></span></div>
+      <div id="stage">
+        <div class="stage-idle" id="stage-idle">
+          <h3>Ready when you are</h3>
+          <p>Press <b>Start course</b>. You can run the courses in any order and repeat them.</p>
+        </div>
+        <div class="flash" id="flash">break</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="results">
+    <div class="panel stack">
+      <div class="row" style="justify-content:space-between">
+        <h2>Results</h2>
+        <button id="btn-analyse" class="primary">Update results and report</button>
+      </div>
+      <div class="figures">
+        <div class="figure"><span class="label">Breaks</span><b id="fig-breaks">–</b><small>while holding</small></div>
+        <div class="figure"><span class="label">Ghost clicks</span><b id="fig-ghosts">–</b><small>extra press on a click</small></div>
+        <div class="figure"><span class="label">Fastest real gap</span><b id="fig-fastest">–</b><small>double or rapid click</small></div>
+        <div class="figure"><span class="label">Suggested</span><b id="fig-suggest">–</b><small>still / moving window</small></div>
+      </div>
+      <div class="hist-wrap"><svg id="hist" viewBox="0 0 640 230" role="img" aria-label="Histogram of release to press gaps"></svg></div>
+      <div class="legend">
+        <span><i style="background:var(--break)"></i>chatter (must be merged)</span>
+        <span><i style="background:var(--intent)"></i>your real double and rapid clicks (must survive)</span>
+        <span><i style="background:var(--warn)"></i>unclear</span>
+        <span>solid line: suggested window · dashed: loaded config</span>
+      </div>
+      <pre class="summary-lines" id="summary">Run a few courses, then press “Update results and report”.</pre>
+    </div>
+
+    <div class="stack">
+      <div class="panel stack">
+        <h3>Report for Claude</h3>
+        <p class="status">Copy all of it and paste it into your Claude Code chat.</p>
+        <textarea class="report" id="report" readonly spellcheck="false"></textarea>
+        <div class="row">
+          <button id="btn-copy" class="primary">Copy report</button>
+          <button id="btn-download" hidden>Save raw log (.json)</button>
+          <span class="status" id="copy-status"></span>
+        </div>
+      </div>
+      <div class="panel stack">
+        <h3>Paste a config from Claude</h3>
+        <p class="status">Paste the config block Claude sends you. The page then scores it against this
+          session, and the same block goes into <code>mouse-debounce.json</code> for the filter.</p>
+        <textarea class="report" id="config-in" style="min-height:120px" spellcheck="false" placeholder='{"schema": "mouse-debounce/1", ...}'></textarea>
+        <div class="row">
+          <button id="btn-load-config">Load config</button>
+          <button id="btn-copy-config">Copy suggested config</button>
+          <span class="status" id="config-status"></span>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+"use strict";
+// ===========================================================================
+// Constants. Gap = time from a release to the next press of the same button.
+
+const REPORT_SCHEMA = "mouse-courses-report/1";
+const CONFIG_SCHEMA = "mouse-debounce/1";
+const RESUME_WINDOW_MS = 400;     // a re-press this soon after a break is chatter
+const GAP_LIST_LIMIT_MS = 1500;   // gaps longer than this are not gaps at all
+const BOUNCE_MS = 100;            // re-press this soon after a finished hold
+const HUMAN_REGRAB_MS = 250;      // a re-press slower than this may be you, not the switch
+const DOUBLE_BURST_MS = 700;
+const RAPID_BURST_MS = 600;
+const TRACE_WINDOW_MS = 4000;
+const HIST_MAX_MS = 400;
+const HIST_BIN_MS = 10;
+const BUTTON_NAMES = ["left", "middle", "right"];  // index = MouseEvent.button
+
+const DEFAULT_CONFIG = {
+  schema: CONFIG_SCHEMA,
+  device_name: "MX Vertical",
+  moving_threshold: 12,
+  buttons: {
+    left: { stationary_ms: 60, stationary_mode: "hold", moving_ms: 90, confirm_ms: 150, bounce_ms: 30 },
+    right: { stationary_ms: 0, stationary_mode: "hold", moving_ms: 0, confirm_ms: 150, bounce_ms: 30 },
+    middle: { stationary_ms: 0, stationary_mode: "hold", moving_ms: 0, confirm_ms: 150, bounce_ms: 30 },
+  },
+};
+
+const $ = (id) => document.getElementById(id);
+const dpr = () => window.devicePixelRatio || 1;
+const round1 = (x) => Math.round(x * 10) / 10;
+const ceilTo = (x, step) => Math.ceil(x / step) * step;
+const floorTo = (x, step) => Math.floor(x / step) * step;
+
+function quantile(values, q) {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const position = (sorted.length - 1) * q;
+  const low = Math.floor(position), high = Math.ceil(position);
+  return sorted[low] + (sorted[high] - sorted[low]) * (position - low);
+}
+
+function storageGet(key) {
+  try { return window.localStorage.getItem(key); } catch (error) { return null; }
+}
+function storageSet(key, value) {
+  try { window.localStorage.setItem(key, value); } catch (error) { /* private mode */ }
+}
+
+// ===========================================================================
+// The filter's logic, a line-by-line port of DebounceCore in
+// mouse_debounce.py (times here are milliseconds). Used to replay a session
+// through a config and see what it would have fixed or broken.
+
+class DebounceCore {
+  constructor(config, onDecision) {
+    this.threshold = config.moving_threshold;
+    this.onDecision = onDecision || (() => {});
+    this.buttons = {};
+    for (const name of ["left", "right", "middle"]) {
+      this.buttons[name] = {
+        policy: config.buttons[name], logicallyDown: false, travel: 0,
+        pendingReleaseAt: null, pendingDeadline: null, pendingContext: null, pendingWindow: 0,
+        pendingMode: "hold", confirmPressAt: null, confirmDeadline: null, confirmGap: 0,
+        confirmTravelStart: 0,
+        blockUntil: null, blockContext: null, blockWindow: 0, swallowing: false,
+        lastRawReleaseAt: null, lastReleaseContext: null, lastReleaseWindow: 0, lastReleaseTravel: 0,
+      };
+    }
+  }
+  decide(button, releaseAt, gapMs, outcome, context, windowMs, travel) {
+    this.onDecision({ button, releaseAt, gapMs, outcome, context, windowMs, travel });
+  }
+  contextForRelease(state) {
+    if (state.travel >= this.threshold) return ["moving", state.policy.moving_ms, "hold"];
+    return ["stationary", state.policy.stationary_ms, state.policy.stationary_mode];
+  }
+  mergeConfirmed(button, state) {
+    this.decide(button, state.pendingReleaseAt, state.confirmGap, "merged", state.pendingContext,
+                state.pendingWindow, state.travel);
+    state.confirmDeadline = null; state.confirmPressAt = null; state.pendingReleaseAt = null;
+  }
+  due(now) {
+    const output = [];
+    for (const [name, state] of Object.entries(this.buttons)) {
+      if (state.pendingDeadline !== null && state.pendingDeadline <= now) {
+        state.pendingDeadline = null; state.pendingReleaseAt = null; state.logicallyDown = false;
+        output.push(["release", name]);
+      }
+      if (state.confirmDeadline !== null && state.confirmDeadline <= now) this.mergeConfirmed(name, state);
+    }
+    return output;
+  }
+  nextDeadline() {
+    const deadlines = [];
+    for (const state of Object.values(this.buttons)) {
+      if (state.pendingDeadline !== null) deadlines.push(state.pendingDeadline);
+      if (state.confirmDeadline !== null) deadlines.push(state.confirmDeadline);
+    }
+    return deadlines.length ? Math.min(...deadlines) : null;
+  }
+  motion(dx, dy, now) {
+    const output = this.due(now);
+    const distance = Math.hypot(dx, dy);
+    for (const [name, state] of Object.entries(this.buttons)) {
+      if (state.logicallyDown) state.travel += distance;
+      const moved = state.travel - state.confirmTravelStart;
+      if (state.confirmDeadline !== null && moved >= this.threshold) this.mergeConfirmed(name, state);
+    }
+    return output;
+  }
+  press(button, now) {
+    const output = this.due(now);
+    const state = this.buttons[button];
+    if (state.pendingDeadline !== null && state.pendingMode === "confirm") {
+      state.confirmPressAt = now; state.confirmDeadline = now + state.policy.confirm_ms;
+      state.confirmGap = now - state.pendingReleaseAt; state.confirmTravelStart = state.travel;
+      state.pendingDeadline = null;
+      return output;
+    }
+    if (state.pendingDeadline !== null) {
+      this.decide(button, state.pendingReleaseAt, now - state.pendingReleaseAt, "merged",
+                  state.pendingContext, state.pendingWindow, state.travel);
+      state.pendingDeadline = null; state.pendingReleaseAt = null;
+      return output;
+    }
+    if (state.blockUntil !== null && now < state.blockUntil) {
+      this.decide(button, state.lastRawReleaseAt, now - state.lastRawReleaseAt, "blocked",
+                  state.blockContext, state.blockWindow, state.lastReleaseTravel);
+      state.swallowing = true;
+      return output;
+    }
+    if (state.lastRawReleaseAt !== null && now - state.lastRawReleaseAt < HIST_MAX_MS) {
+      this.decide(button, state.lastRawReleaseAt, now - state.lastRawReleaseAt, "passed",
+                  state.lastReleaseContext, state.lastReleaseWindow, state.lastReleaseTravel);
+    }
+    state.blockUntil = null; state.logicallyDown = true; state.travel = 0;
+    output.push(["press", button]);
+    return output;
+  }
+  release(button, now) {
+    const output = this.due(now);
+    const state = this.buttons[button];
+    state.lastRawReleaseAt = now;
+    if (state.swallowing) {
+      state.swallowing = false;
+      state.blockUntil = now + state.blockWindow;
+      return output;
+    }
+    if (state.confirmDeadline !== null) {
+      const pressedFor = now - state.confirmPressAt;
+      state.confirmDeadline = null; state.confirmPressAt = null;
+      if (pressedFor < state.policy.bounce_ms) {
+        this.decide(button, state.pendingReleaseAt, state.confirmGap, "merged", state.pendingContext,
+                    state.pendingWindow, state.travel);
+        state.pendingReleaseAt = now; state.pendingDeadline = now + state.pendingWindow;
+        return output;
+      }
+      this.decide(button, state.pendingReleaseAt, state.confirmGap, "passed", state.pendingContext,
+                  state.pendingWindow, state.travel);
+      output.push(["release", button], ["press", button]);
+      state.travel -= state.confirmTravelStart;
+      state.pendingReleaseAt = null;
+    }
+    if (!state.logicallyDown) { output.push(["release", button]); return output; }
+    const [context, windowMs, mode] = this.contextForRelease(state);
+    state.lastReleaseContext = context; state.lastReleaseWindow = windowMs;
+    state.lastReleaseTravel = state.travel;
+    if (windowMs <= 0) {
+      state.logicallyDown = false; output.push(["release", button]);
+    } else if (mode === "hold" || mode === "confirm") {
+      state.pendingReleaseAt = now; state.pendingDeadline = now + windowMs;
+      state.pendingContext = context; state.pendingWindow = windowMs; state.pendingMode = mode;
+    } else {
+      state.logicallyDown = false; state.blockUntil = now + windowMs;
+      state.blockContext = context; state.blockWindow = windowMs;
+      output.push(["release", button]);
+    }
+    return output;
+  }
+}
+
+function normaliseConfig(raw) {
+  const findConfig = (value) => {
+    if (!value || typeof value !== "object") return null;
+    if (!Array.isArray(value) && value.schema === CONFIG_SCHEMA) return value;
+    for (const child of Object.values(value)) {
+      const found = findConfig(child);
+      if (found) return found;
+    }
+    return null;
+  };
+  raw = findConfig(raw) || raw;
+  if (raw.schema && raw.schema !== CONFIG_SCHEMA) throw new Error(`expected schema ${CONFIG_SCHEMA}`);
+  const config = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
+  if (raw.device_name) config.device_name = raw.device_name;
+  if (raw.moving_threshold !== undefined) config.moving_threshold = Number(raw.moving_threshold);
+  for (const [name, policy] of Object.entries(raw.buttons || {})) {
+    if (!config.buttons[name]) throw new Error(`unknown button ${name}`);
+    const merged = { ...config.buttons[name], ...policy };
+    if (!["hold", "block", "confirm"].includes(merged.stationary_mode)) {
+      throw new Error(`${name}: stationary_mode must be hold, block or confirm`);
+    }
+    for (const field of ["stationary_ms", "moving_ms", "confirm_ms", "bounce_ms"]) {
+      merged[field] = Number(merged[field]);
+      if (!(merged[field] >= 0 && merged[field] <= 1000)) throw new Error(`${name}.${field} must be 0-1000`);
+    }
+    config.buttons[name] = merged;
+  }
+  if (!(config.moving_threshold >= 0)) throw new Error("moving_threshold must be a number");
+  return config;
+}
+
+function parseConfigText(text) {
+  const start = text.indexOf("{"), end = text.lastIndexOf("}");
+  if (start < 0 || end <= start) throw new Error("no JSON object found");
+  return normaliseConfig(JSON.parse(text.slice(start, end + 1)));
+}
+
+// ===========================================================================
+// Recorder: every press, release and (while it matters) movement, with the
+// browser's event timestamps. Courses get a callback for each, and may set
+// record.v ("break" or "done") on a release to say what it meant.
+
+const recorder = {
+  t0: performance.now(),
+  events: [],            // {k:"d"|"u"|"m", t, b, x, y, c, v, src}
+  down: [false, false, false],
+  course: null,          // the running course object
+  lastPointerType: "mouse",
+  lastPointerTypeAt: -1e9,
+  listeners: [],
+  lastUp: [null, null, null],
+  // Only presses that start inside the course area belong to the course;
+  // clicks on the course list or buttons do not.
+  pressCourse: [null, null, null],
+  stamp(event) { return event.timeStamp - this.t0; },
+  wantsMotion() { return this.course !== null || this.down.some(Boolean); },
+  isFromTouchOrPen(event) {
+    if (event.sourceCapabilities && event.sourceCapabilities.firesTouchEvents) return true;
+    return this.lastPointerType !== "mouse" && performance.now() - this.lastPointerTypeAt < 800;
+  },
+  push(record) {
+    this.events.push(record);
+    for (const listener of this.listeners) listener(record);
+    return record;
+  },
+};
+
+window.addEventListener("pointerdown", (event) => {
+  recorder.lastPointerType = event.pointerType;
+  recorder.lastPointerTypeAt = performance.now();
+}, true);
+
+window.addEventListener("mousedown", (event) => {
+  if (recorder.isFromTouchOrPen(event) || event.button > 2) return;
+  const running = recorder.course && !recorder.course.finished ? recorder.course : null;
+  const course = running && $("stage").contains(event.target) ? running : null;
+  const record = recorder.push({
+    k: "d", t: recorder.stamp(event), b: event.button, x: event.clientX * dpr(), y: event.clientY * dpr(),
+    c: course ? course.id : null, src: "mouse",
+  });
+  recorder.down[event.button] = true;
+  recorder.pressCourse[event.button] = course;
+  if (course) course.onDown(event, record);
+}, true);
+
+window.addEventListener("mouseup", (event) => {
+  if (recorder.isFromTouchOrPen(event) || event.button > 2) return;
+  if (!recorder.down[event.button]) return;  // already ended by a native drag
+  recorder.down[event.button] = false;
+  endPress(event, event.button, "mouse");
+}, true);
+
+window.addEventListener("pointermove", (event) => {
+  if (event.pointerType !== "mouse") return;
+  if (recorder.wantsMotion()) {
+    const samples = event.getCoalescedEvents ? event.getCoalescedEvents() : [];
+    for (const sample of samples.length ? samples : [event]) {
+      recorder.events.push({ k: "m", t: recorder.stamp(sample), x: sample.clientX * dpr(), y: sample.clientY * dpr() });
+    }
+  }
+  if (recorder.course) recorder.course.onMove(event);
+}, { capture: true, passive: true });
+
+// During a native drag the browser sends drag events instead of mouse events.
+window.addEventListener("dragover", (event) => {
+  if (!recorder.wantsMotion() || (event.clientX === 0 && event.clientY === 0)) return;
+  recorder.events.push({ k: "m", t: recorder.stamp(event), x: event.clientX * dpr(), y: event.clientY * dpr() });
+}, true);
+window.addEventListener("dragend", (event) => {
+  if (!recorder.down[0]) return;
+  recorder.down[0] = false;
+  endPress(event, 0, "dnd");
+}, true);
+
+function endPress(event, button, source) {
+  const course = recorder.pressCourse[button] === recorder.course ? recorder.course : null;
+  recorder.pressCourse[button] = null;
+  const record = recorder.push({
+    k: "u", t: recorder.stamp(event), b: button, x: event.clientX * dpr(), y: event.clientY * dpr(),
+    c: course ? course.id : null, src: source,
+  });
+  recorder.lastUp[button] = record;
+  if (course) course.onUp(event, record);
+}
+
+$("stage").addEventListener("contextmenu", (event) => event.preventDefault());
+
+// ===========================================================================
+// Live trace (the "scope" at the top)
+
+const trace = {
+  canvas: $("trace"), gapCount: 0,
+  onRecord(record) {
+    if (record.k !== "d" || record.b !== 0) return;
+    const lastUp = recorder.lastUp[0];
+    if (!lastUp) return;
+    const gap = record.t - lastUp.t;
+    const kind = record.c ? KIND_OF[record.c] : null;
+    if (gap >= 0 && gap < RESUME_WINDOW_MS && (kind === "hold" || kind === "single")) {
+      this.gapCount += 1;
+      $("gap-count").textContent = String(this.gapCount);
+      $("gap-last").textContent = `${round1(gap)} ms`;
+    }
+  },
+  draw() {
+    const canvas = this.canvas;
+    const width = canvas.clientWidth, height = canvas.clientHeight;
+    const scale = dpr();
+    if (canvas.width !== Math.round(width * scale)) {
+      canvas.width = Math.round(width * scale); canvas.height = Math.round(height * scale);
+    }
+    const ctx = canvas.getContext("2d");
+    ctx.setTransform(scale, 0, 0, scale, 0, 0);
+    const styles = getComputedStyle(document.documentElement);
+    ctx.fillStyle = styles.getPropertyValue("--trace-bg");
+    ctx.fillRect(0, 0, width, height);
+    const now = performance.now() - recorder.t0;
+    const start = now - TRACE_WINDOW_MS;
+    const xOf = (t) => ((t - start) / TRACE_WINDOW_MS) * width;
+    ctx.strokeStyle = styles.getPropertyValue("--trace-grid");
+    ctx.lineWidth = 1;
+    for (let s = 0; s <= 4; s++) {
+      const x = xOf(Math.ceil(start / 1000) * 1000 + s * 1000);
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, height); ctx.stroke();
+    }
+    const high = 18, low = height - 22;
+    // Walk the left-button presses and releases in the window.
+    const buttonEvents = [];
+    for (let i = recorder.events.length - 1; i >= 0; i--) {
+      const e = recorder.events[i];
+      if (e.k === "m" || e.b !== 0) continue;
+      buttonEvents.unshift(e);
+      if (e.t < start) break;
+    }
+    let level = buttonEvents.length && buttonEvents[0].t < start ? (buttonEvents[0].k === "d") : false;
+    if (!buttonEvents.length || buttonEvents[0].t >= start) level = false;
+    ctx.strokeStyle = styles.getPropertyValue("--trace-line");
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(0, level ? high : low);
+    let previousUp = null;
+    ctx.font = "11px 'IBM Plex Mono', monospace";
+    const labels = [];
+    for (const e of buttonEvents) {
+      if (e.t < start) { level = e.k === "d"; if (e.k === "u") previousUp = e; continue; }
+      const x = xOf(e.t);
+      ctx.lineTo(x, level ? high : low);
+      level = e.k === "d";
+      ctx.lineTo(x, level ? high : low);
+      if (e.k === "u") previousUp = e;
+      if (e.k === "d" && previousUp && e.t - previousUp.t < RESUME_WINDOW_MS) {
+        labels.push([xOf(previousUp.t), x, e.t - previousUp.t]);
+      }
+    }
+    ctx.lineTo(width, level ? high : low);
+    ctx.stroke();
+    let lastLabelEnd = -Infinity;
+    for (const [x1, x2, gap] of labels) {
+      ctx.fillStyle = "rgba(255, 110, 90, 0.35)";
+      ctx.fillRect(x1, high - 6, Math.max(x2 - x1, 2), low - high + 12);
+      const labelX = Math.min(x2 + 4, width - 46);
+      if (labelX < lastLabelEnd) continue;  // keep labels from overlapping
+      ctx.fillStyle = "#ffd27a";
+      ctx.fillText(`${Math.round(gap)} ms`, labelX, low + 16);
+      lastLabelEnd = labelX + 48;
+    }
+    ctx.fillStyle = "#6f8496";
+    ctx.fillText("pressed", 4, high - 5);
+    ctx.fillText("released", 4, low + 16);
+  },
+};
+recorder.listeners.push((record) => trace.onRecord(record));
+(function animate() { trace.draw(); requestAnimationFrame(animate); })();
+
+function flashBreak(text) {
+  const flash = $("flash");
+  flash.textContent = text;
+  flash.classList.add("on");
+  clearTimeout(flashBreak.timer);
+  flashBreak.timer = setTimeout(() => flash.classList.remove("on"), 900);
+}
+
+// ===========================================================================
+// Courses. kind: "hold" (one continuous press per attempt), "single",
+// "double", "rapid". The analyser labels gaps by kind and by the verdicts
+// the hold courses leave on their releases.
+
+const GRIPS = ["Normal grip", "Light grip", "The lightest grip that still holds the button"];
+
+function stageBox() { return $("stage").getBoundingClientRect(); }
+function toStage(event) {
+  const box = stageBox();
+  return { x: event.clientX - box.left, y: event.clientY - box.top };
+}
+function makeElement(tag, className, text) {
+  const element = document.createElement(tag);
+  if (className) element.className = className;
+  if (text !== undefined) element.textContent = text;
+  return element;
+}
+function randomBetween(low, high) { return low + Math.random() * (high - low); }
+
+class Course {
+  constructor(id, title, kind, how) {
+    Object.assign(this, { id, title, kind, how });
+    this.stats = { status: "new", successes: 0, total: 0, breaks: 0 };
+  }
+  begin(layer, finish) { this.layer = layer; this.finish = finish; this.finished = false; }
+  end() {}
+  onDown() {} onUp() {} onMove() {}
+  setTask(text) { $("task-text").textContent = text; }
+  setProgress() { $("task-progress").textContent = `${this.stats.successes} / ${this.stats.total}`; }
+  succeed() {
+    this.stats.successes += 1; this.setProgress();
+    if (this.stats.successes >= this.stats.total) {
+      this.stats.status = "done"; this.finished = true; this.finish(); return true;
+    }
+    return false;
+  }
+  noteBreak(gapText) { this.stats.breaks += 1; flashBreak(gapText || "break: press again to continue"); }
+}
+
+// -- 1. Drag cards ----------------------------------------------------------
+class DragCourse extends Course {
+  constructor() {
+    super("drag", "Drag the cards into the folder", "hold",
+      "Press a card, drag it into the folder, let go there. If it drops on the way, press again quickly and keep going.");
+    this.names = ["invoice-03.pdf", "holiday.jpg", "notes.md", "budget.ods", "scan-0112.png",
+                  "thesis-v7.docx", "backup.tar", "song.flac"];
+  }
+  begin(layer, finish) {
+    super.begin(layer, finish);
+    this.stats.total = this.names.length;
+    this.card = makeElement("div", "card");
+    this.bin = makeElement("div", "bin", "Drop into this folder");
+    layer.append(this.bin, this.card);
+    this.place();
+  }
+  place() {
+    const box = stageBox();
+    const index = this.stats.successes;
+    const leftToRight = index % 2 === 0;
+    const near = index % 4 === 3;
+    const cardX = leftToRight ? 30 : box.width - 180;
+    const cardY = randomBetween(30, box.height - 80);
+    const binX = near ? cardX + (leftToRight ? 220 : -260) : (leftToRight ? box.width - 200 : 30);
+    const binY = randomBetween(20, box.height - 130);
+    Object.assign(this.card.style, { left: `${cardX}px`, top: `${cardY}px` });
+    Object.assign(this.bin.style, { left: `${Math.max(10, binX)}px`, top: `${binY}px` });
+    this.card.textContent = this.names[index];
+    this.card.className = "card";
+    this.state = "idle";  // idle | held | dropped
+    this.setTask(`Drag “${this.names[index]}” into the folder.`);
+    this.setProgress();
+  }
+  overBin() {
+    const a = this.card.getBoundingClientRect(), b = this.bin.getBoundingClientRect();
+    const cx = a.left + a.width / 2, cy = a.top + a.height / 2;
+    return cx > b.left && cx < b.right && cy > b.top && cy < b.bottom;
+  }
+  onDown(event) {
+    if (event.button !== 0) return;
+    const resume = this.state === "dropped" && performance.now() - this.droppedAt < RESUME_WINDOW_MS;
+    if (!resume && !this.card.contains(event.target)) return;
+    if (!resume) {
+      const p = toStage(event);
+      this.offset = { x: p.x - this.card.offsetLeft, y: p.y - this.card.offsetTop };
+    }
+    this.state = "held";
+    this.card.className = "card held";
+    event.preventDefault();
+  }
+  onMove(event) {
+    if (this.state !== "held") return;
+    const p = toStage(event);
+    this.card.style.left = `${p.x - this.offset.x}px`;
+    this.card.style.top = `${p.y - this.offset.y}px`;
+    this.bin.classList.toggle("over", this.overBin());
+  }
+  onUp(event, record) {
+    if (event.button !== 0 || this.state !== "held") return;
+    if (this.overBin()) {
+      record.v = "done";
+      this.bin.classList.remove("over");
+      if (!this.succeed()) this.place();
+      return;
+    }
+    record.v = "break";
+    this.state = "dropped";
+    this.droppedAt = performance.now();
+    this.card.className = "card dropped";
+    this.noteBreak("dropped: press again within 0.4 s to keep dragging");
+  }
+}
+
+// -- 2. Select text ---------------------------------------------------------
+const SELECT_TEXT = [
+  "Inside each mouse button sits a ", ["microswitch"], ": a thin copper leaf that snaps between two contacts ",
+  "when you press. Logitech's MX Vertical shipped with ", ["Omron D2FC-F-7N switches"], ", which are rated for ten ",
+  "million clicks but run at a very low current. ", ["At that current a thin oxide film on the contacts may never be burnt off"],
+  ", so after a year or two the contact can lift for a few tens of milliseconds while you hold the button. ",
+  "The computer sees ", ["a release and a new press"], ", and your drag is gone. ",
+  ["Pressing harder"], " hides it for a while; ", ["replacing the switch fixes it for good"], ".",
+];
+
+function buildProse(layer, parts) {
+  const prose = makeElement("div", "prose");
+  const goals = [];
+  for (const part of parts) {
+    if (Array.isArray(part)) {
+      const span = makeElement("span", "goal", part[0]);
+      goals.push(span);
+      prose.append(span);
+    } else {
+      prose.append(document.createTextNode(part));
+    }
+  }
+  layer.append(prose);
+  return { prose, goals };
+}
+
+function normaliseSelection(text) {
+  return text.replace(/\s+/g, " ").trim().replace(/^[\s.,;:"“”']+|[\s.,;:"“”']+$/g, "").toLowerCase();
+}
+
+class SelectCourse extends Course {
+  constructor() {
+    super("select", "Select the highlighted phrases", "hold",
+      "Drag across each highlighted phrase to select exactly it, from its first letter to its last. A selection that snaps or restarts mid-drag is chatter.");
+  }
+  begin(layer, finish) {
+    super.begin(layer, finish);
+    $("stage").classList.add("texty");
+    const { prose, goals } = buildProse(layer, SELECT_TEXT);
+    this.prose = prose; this.goals = goals;
+    this.stats.total = goals.length;
+    this.inAttempt = false;
+    this.show();
+  }
+  end() { $("stage").classList.remove("texty"); window.getSelection().removeAllRanges(); }
+  show() {
+    this.goals.forEach((goal, i) => goal.classList.toggle("now", i === this.stats.successes));
+    this.setTask(`Select: “${this.goals[this.stats.successes].textContent}”`);
+    this.setProgress();
+  }
+  onDown(event) {
+    if (event.button !== 0 || !this.prose.contains(event.target)) return;
+    window.getSelection().removeAllRanges();  // press inside a selection must not start a native drag
+    this.inAttempt = true;
+  }
+  onUp(event, record) {
+    if (event.button !== 0 || !this.inAttempt) return;
+    const goal = this.goals[this.stats.successes];
+    setTimeout(() => {
+      const selected = normaliseSelection(window.getSelection().toString());
+      if (selected && selected === normaliseSelection(goal.textContent)) {
+        record.v = "done";
+        this.inAttempt = false;
+        goal.classList.add("got");
+        window.getSelection().removeAllRanges();
+        if (!this.succeed()) this.show();
+      } else {
+        record.v = "break";
+      }
+    }, 0);
+  }
+}
+
+// -- 3. Hold still ----------------------------------------------------------
+const HOLD_STILL_MS = 8000;
+
+class StillCourse extends Course {
+  constructor() {
+    super("still", "Hold the button without moving", "hold",
+      "Press inside the ring and hold, without moving the mouse, until the ring is full (8 s). Three rounds, each with a lighter grip.");
+  }
+  begin(layer, finish) {
+    super.begin(layer, finish);
+    this.stats.total = GRIPS.length;
+    const ns = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(ns, "svg");
+    svg.setAttribute("class", "hold-ring"); svg.setAttribute("width", "220"); svg.setAttribute("height", "220");
+    svg.setAttribute("viewBox", "0 0 220 220");
+    svg.innerHTML = `<circle cx="110" cy="110" r="92" fill="none" style="stroke:var(--sunk)" stroke-width="18"/>
+      <circle id="ring-fill" cx="110" cy="110" r="92" fill="none" style="stroke:var(--accent)" stroke-width="18"
+        stroke-linecap="round" transform="rotate(-90 110 110)" stroke-dasharray="578" stroke-dashoffset="578"/>
+      <circle cx="110" cy="110" r="70" style="fill:var(--panel);stroke:var(--rule)"/>
+      <text id="ring-text" x="110" y="116" text-anchor="middle" font-size="18">hold</text>`;
+    layer.append(svg);
+    this.svg = svg;
+    this.round();
+    this.tick = setInterval(() => this.update(), 50);
+  }
+  end() { clearInterval(this.tick); }
+  round() {
+    this.heldMs = 0; this.heldSince = null; this.state = "idle";
+    this.setTask(`Round ${this.stats.successes + 1}: ${GRIPS[this.stats.successes]}. Press in the ring and hold still.`);
+    this.setProgress(); this.update();
+  }
+  update() {
+    const now = performance.now();
+    const held = this.heldMs + (this.heldSince !== null ? now - this.heldSince : 0);
+    const fraction = Math.min(held / HOLD_STILL_MS, 1);
+    this.svg.querySelector("#ring-fill").setAttribute("stroke-dashoffset", String(578 * (1 - fraction)));
+    this.svg.querySelector("#ring-text").textContent =
+      fraction >= 1 ? "let go" : this.state === "held" ? `${(held / 1000).toFixed(1)} s` : "hold";
+  }
+  onDown(event) {
+    if (event.button !== 0) return;
+    const resume = this.state === "broken" && performance.now() - this.brokeAt < RESUME_WINDOW_MS;
+    if (!resume && !this.svg.contains(event.target)) return;
+    this.state = "held"; this.heldSince = performance.now();
+    event.preventDefault();
+  }
+  onUp(event, record) {
+    if (event.button !== 0 || this.state !== "held") return;
+    this.heldMs += performance.now() - this.heldSince; this.heldSince = null;
+    if (this.heldMs >= HOLD_STILL_MS) {
+      record.v = "done";
+      if (!this.succeed()) this.round();
+      return;
+    }
+    record.v = "break"; this.state = "broken"; this.brokeAt = performance.now();
+    this.noteBreak("released early: press again to continue");
+    this.update();
+  }
+}
+
+// -- 4. Trace the track -----------------------------------------------------
+class TraceCourse extends Course {
+  constructor() {
+    super("trace", "Follow the track while holding", "hold",
+      "Press on the green start dot, hold, and follow the track to the end. Slow and steady is fine. Three laps, each with a lighter grip.");
+  }
+  begin(layer, finish) {
+    super.begin(layer, finish);
+    this.stats.total = GRIPS.length;
+    const box = stageBox();
+    const w = box.width, h = box.height;
+    const controls = [[0.07, 0.82], [0.25, 0.15], [0.42, 0.85], [0.6, 0.12], [0.78, 0.85], [0.93, 0.2]];
+    this.points = [];
+    for (let i = 0; i < controls.length - 1; i++) {
+      const [x1, y1] = controls[i], [x2, y2] = controls[i + 1];
+      for (let s = 0; s < 40; s++) {
+        const u = s / 40;
+        const ease = (1 - Math.cos(Math.PI * u)) / 2;
+        this.points.push([(x1 + (x2 - x1) * u) * w, (y1 + (y2 - y1) * ease) * h]);
+      }
+    }
+    this.points.push([controls.at(-1)[0] * w, controls.at(-1)[1] * h]);
+    const d = this.points.map(([x, y], i) => `${i ? "L" : "M"}${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+    const ns = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(ns, "svg");
+    svg.id = "track-svg";
+    svg.innerHTML = `<path d="${d}" fill="none" style="stroke:var(--sunk)" stroke-width="44" stroke-linecap="round" stroke-linejoin="round"/>
+      <path id="track-done" d="${d}" fill="none" style="stroke:var(--accent)" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="${this.points[0][0]}" cy="${this.points[0][1]}" r="16" style="fill:var(--ok)"/>
+      <circle cx="${this.points.at(-1)[0]}" cy="${this.points.at(-1)[1]}" r="16" fill="none" style="stroke:var(--ink)" stroke-width="3"/>`;
+    layer.append(svg);
+    this.doneEl = svg.querySelector("#track-done");
+    this.length = this.doneEl.getTotalLength();
+    this.lap();
+  }
+  lap() {
+    this.progress = 0; this.state = "idle";
+    this.drawProgress();
+    this.setTask(`Lap ${this.stats.successes + 1}: ${GRIPS[this.stats.successes]}. Start on the green dot.`);
+    this.setProgress();
+  }
+  drawProgress() {
+    const fraction = this.progress / (this.points.length - 1);
+    this.doneEl.setAttribute("stroke-dasharray", `${this.length * fraction} ${this.length}`);
+  }
+  near(p, index, radius) {
+    const [x, y] = this.points[index];
+    return Math.hypot(p.x - x, p.y - y) < radius;
+  }
+  onDown(event) {
+    if (event.button !== 0) return;
+    const p = toStage(event);
+    const resume = this.state === "broken" && performance.now() - this.brokeAt < RESUME_WINDOW_MS;
+    if (!resume && !this.near(p, this.progress, 40)) return;
+    this.state = "held";
+    event.preventDefault();
+  }
+  onMove(event) {
+    if (this.state !== "held") return;
+    const p = toStage(event);
+    for (let i = this.progress + 1; i < Math.min(this.progress + 16, this.points.length); i++) {
+      if (this.near(p, i, 34)) this.progress = i;
+    }
+    this.drawProgress();
+    if (this.progress === this.points.length - 1) this.setTask("At the finish: let go.");
+  }
+  onUp(event, record) {
+    if (event.button !== 0 || this.state !== "held") return;
+    if (this.progress >= this.points.length - 3) {
+      record.v = "done";
+      if (!this.succeed()) this.lap();
+      return;
+    }
+    record.v = "break"; this.state = "broken"; this.brokeAt = performance.now();
+    this.noteBreak("released: press again to continue the lap");
+  }
+}
+
+// -- 5. Drag selected text --------------------------------------------------
+const TEXT_DRAG_PARTS = [
+  "Selected text can be dragged like a file. Drag the ", ["highlighted"], " word into the box below. ",
+  "This is the drag that ", ["browsers"], " and ", ["editors"], " use, so a chattering switch drops the text ",
+  "wherever the pointer happens to be. ", ["Again"], "?",
+];
+
+class TextDragCourse extends Course {
+  constructor() {
+    super("textdrag", "Drag selected words into the box", "hold",
+      "The current word is already selected. Press on it, drag it down into the box and let go. This uses the system's own drag and drop.");
+  }
+  begin(layer, finish) {
+    super.begin(layer, finish);
+    $("stage").classList.add("texty");
+    const { prose, goals } = buildProse(layer, TEXT_DRAG_PARTS);
+    this.prose = prose; this.goals = goals;
+    this.zone = makeElement("div", "dropzone", "drop the word here");
+    layer.append(this.zone);
+    this.stats.total = goals.length;
+    this.inAttempt = false; this.dropOk = false;
+    this.prose.addEventListener("dragstart", () => { this.inAttempt = true; this.dropOk = false; });
+    this.zone.addEventListener("dragover", (event) => { event.preventDefault(); this.zone.classList.add("over"); });
+    this.zone.addEventListener("dragleave", () => this.zone.classList.remove("over"));
+    this.zone.addEventListener("drop", (event) => {
+      event.preventDefault();
+      this.zone.classList.remove("over");
+      const text = normaliseSelection(event.dataTransfer.getData("text/plain"));
+      this.dropOk = text === normaliseSelection(this.goals[this.stats.successes].textContent);
+      this.zone.textContent = this.dropOk ? `got “${text}”` : `that was “${text}”, try the highlighted word`;
+    });
+    this.show();
+  }
+  end() { $("stage").classList.remove("texty"); window.getSelection().removeAllRanges(); }
+  show() {
+    this.goals.forEach((goal, i) => goal.classList.toggle("now", i === this.stats.successes));
+    this.reselect();
+    this.setTask(`Drag “${this.goals[this.stats.successes].textContent}” into the box.`);
+    this.setProgress();
+  }
+  reselect() {
+    const range = document.createRange();
+    range.selectNodeContents(this.goals[this.stats.successes]);
+    const selection = window.getSelection();
+    selection.removeAllRanges(); selection.addRange(range);
+  }
+  onDown(event) {
+    if (event.button === 0 && this.goals[this.stats.successes].contains(event.target)) this.inAttempt = true;
+  }
+  onUp(event, record) {
+    if (event.button !== 0) return;
+    if (record.src === "dnd" && this.inAttempt) {
+      this.inAttempt = false;
+      if (this.dropOk) {
+        record.v = "done";
+        this.goals[this.stats.successes].classList.add("got");
+        if (!this.succeed()) setTimeout(() => this.show(), 60);
+        return;
+      }
+      record.v = "break";
+      this.noteBreak("dropped outside the box");
+    } else if (this.inAttempt) {
+      record.v = "break";  // released before the drag even started
+      this.inAttempt = false;
+    }
+    setTimeout(() => { if (this.stats.status !== "done") this.reselect(); }, 60);
+  }
+}
+
+// -- 6. Double-click words --------------------------------------------------
+const DOUBLE_PARTS = [
+  "A ", ["double"], "-click is two presses close together, and your switch has to ", ["release"],
+  " cleanly in between. If the gap you leave is ", ["shorter"], " than the chatter gap, no ",
+  ["filter"], " can tell them apart. So this course ", ["measures"], " how fast you really ",
+  ["click"], " twice, and the ", ["window"], " Claude picks stays ", ["below"], " your fastest ",
+  ["honest"], " double-", ["click"], ".",
+];
+
+class DoubleCourse extends Course {
+  constructor() {
+    super("double", "Double-click the highlighted words", "double",
+      "Double-click each highlighted word at your normal speed. This measures your own release-to-press gap, which the filter must never swallow.");
+  }
+  begin(layer, finish) {
+    super.begin(layer, finish);
+    const { prose, goals } = buildProse(layer, DOUBLE_PARTS);
+    this.prose = prose; this.goals = goals;
+    this.stats.total = goals.length;
+    this.onDouble = (event) => {
+      const goal = this.goals[this.stats.successes];
+      if (!goal || !goal.contains(event.target)) return;
+      goal.classList.add("got");
+      window.getSelection().removeAllRanges();
+      if (!this.succeed()) this.show();
+    };
+    prose.addEventListener("dblclick", this.onDouble);
+    this.show();
+  }
+  show() {
+    this.goals.forEach((goal, i) => goal.classList.toggle("now", i === this.stats.successes));
+    this.setTask(`Double-click “${this.goals[this.stats.successes].textContent}”.`);
+    this.setProgress();
+  }
+}
+
+// -- 7. Rapid clicks --------------------------------------------------------
+const RAPID_CLICKS = 20;
+
+class RapidCourse extends Course {
+  constructor() {
+    super("rapid", "Click fast", "rapid",
+      "Click the big button 20 times as fast as is comfortable, twice. People do this on spinners and arrows, so the filter must keep these clicks too.");
+  }
+  begin(layer, finish) {
+    super.begin(layer, finish);
+    this.stats.total = 2;
+    this.button = makeElement("button", "big-button");
+    layer.append(this.button);
+    this.round();
+  }
+  round() {
+    this.count = 0; this.resting = false;
+    this.render();
+    this.setTask(`Round ${this.stats.successes + 1} of 2: click ${RAPID_CLICKS} times, fast.`);
+    this.setProgress();
+  }
+  render() {
+    this.button.innerHTML = "";
+    this.button.append(String(this.count), makeElement("small", "", this.resting ? "rest" : `of ${RAPID_CLICKS}`));
+  }
+  onDown(event) {
+    if (event.button !== 0 || this.resting || !this.button.contains(event.target)) return;
+    this.count += 1; this.render();
+    if (this.count >= RAPID_CLICKS) {
+      this.resting = true; this.render();
+      setTimeout(() => { if (!this.succeed()) this.round(); }, 1200);
+    }
+  }
+}
+
+// -- 8. Single clicks -------------------------------------------------------
+class SingleCourse extends Course {
+  constructor() {
+    super("single", "Click each target once", "single",
+      "Click each target once, at a relaxed pace. An extra press right after your click is a ghost click from the switch.");
+  }
+  begin(layer, finish) {
+    super.begin(layer, finish);
+    this.stats.total = 12;
+    this.target = makeElement("div", "target");
+    layer.append(this.target);
+    this.place();
+  }
+  place() {
+    const box = stageBox();
+    Object.assign(this.target.style, {
+      left: `${randomBetween(20, box.width - 80)}px`, top: `${randomBetween(20, box.height - 80)}px`, visibility: "visible",
+    });
+    this.target.className = "target";
+    this.target.textContent = String(this.stats.successes + 1);
+    this.armed = true;
+    this.setTask("Click the target once.");
+    this.setProgress();
+  }
+  onUp(event) {
+    if (event.button !== 0 || !this.armed || !this.target.contains(event.target)) return;
+    this.armed = false;
+    this.target.className = "target hit";
+    if (!this.succeed()) {
+      setTimeout(() => { this.target.style.visibility = "hidden"; }, 300);
+      setTimeout(() => this.place(), 700);
+    }
+  }
+}
+
+const COURSES = [new DragCourse(), new SelectCourse(), new StillCourse(), new TraceCourse(),
+                 new TextDragCourse(), new DoubleCourse(), new RapidCourse(), new SingleCourse()];
+
+// ===========================================================================
+// Course list and running
+
+let selectedIndex = 0;
+
+function renderCourseList() {
+  const list = $("course-list");
+  list.innerHTML = "";
+  COURSES.forEach((course, index) => {
+    const item = document.createElement("li");
+    const button = makeElement("button");
+    button.type = "button";
+    button.setAttribute("aria-current", String(index === selectedIndex));
+    const chipText = { new: "", running: "running", partial: "part", done: "done" }[course.stats.status];
+    button.append(makeElement("span", "n", String(index + 1)), makeElement("span", "", course.title));
+    if (chipText) button.append(makeElement("span", `chip ${course.stats.status}`, chipText));
+    button.addEventListener("click", () => { stopCourse(); selectedIndex = index; showCourse(); });
+    item.append(button);
+    list.append(item);
+  });
+}
+
+function showCourse() {
+  const course = COURSES[selectedIndex];
+  $("course-kicker").textContent = `Course ${selectedIndex + 1} of ${COURSES.length}`;
+  $("course-title").textContent = course.title;
+  $("course-how").textContent = course.how;
+  $("btn-start").textContent = course.stats.status === "done" ? "Run again" : "Start course";
+  renderCourseList();
+}
+
+function clearStage() {
+  for (const child of [...$("stage").children]) {
+    if (child.id !== "stage-idle" && child.id !== "flash") child.remove();
+  }
+}
+
+function startCourse() {
+  stopCourse();
+  const course = COURSES[selectedIndex];
+  course.stats = { status: "running", successes: 0, total: 0, breaks: 0 };
+  $("stage-idle").hidden = true;
+  $("flash").classList.remove("on");
+  $("btn-start").textContent = "Restart course";
+  clearStage();
+  const layer = makeElement("div");
+  layer.style.cssText = "position:absolute;inset:0";
+  $("stage").append(layer);
+  recorder.course = course;
+  recorder.push({ k: "cs", t: performance.now() - recorder.t0, c: course.id });
+  course.begin(layer, () => {
+    setTimeout(() => {
+      if (recorder.course !== course) return;
+      stopCourse();
+      $("task-text").textContent = `Done. ${course.stats.breaks} break(s) noticed. Pick the next course.`;
+      if (selectedIndex < COURSES.length - 1) selectedIndex += 1;
+      showCourse();
+      analyseAndRender();
+    }, 250);
+  });
+  renderCourseList();
+}
+
+function stopCourse() {
+  const course = recorder.course;
+  if (!course) return;
+  course.end();
+  if (course.stats.status === "running") course.stats.status = course.stats.successes ? "partial" : "new";
+  recorder.push({ k: "ce", t: performance.now() - recorder.t0, c: course.id });
+  recorder.course = null;
+  clearStage();
+  $("stage-idle").hidden = false;
+  renderCourseList();
+}
+
+$("btn-start").addEventListener("click", (event) => { event.currentTarget.blur(); startCourse(); });
+$("btn-skip").addEventListener("click", () => {
+  stopCourse(); selectedIndex = (selectedIndex + 1) % COURSES.length; showCourse();
+});
+
+// ===========================================================================
+// Analysis
+
+const SPURIOUS = new Set(["chatter", "ghost", "bounce"]);
+const KIND_OF = Object.fromEntries(COURSES.map((course) => [course.id, course.kind]));
+
+function collectGaps(events) {
+  // Pair every release with the next press of the same button.
+  const gaps = [];
+  const lastUp = [null, null, null];
+  const lastDown = [null, null, null];
+  const awaitingRelease = [null, null, null];  // gap whose press is still down
+  for (const e of events) {
+    if (e.k === "u" && awaitingRelease[e.b]) {
+      awaitingRelease[e.b].pressedAfter = e.t - awaitingRelease[e.b].down.t;
+      awaitingRelease[e.b] = null;
+    }
+    if (e.k === "d") {
+      const up = lastUp[e.b];
+      if (up && e.t - up.t < GAP_LIST_LIMIT_MS) {
+        gaps.push({ up, down: e, gap: e.t - up.t, button: e.b, course: up.c, kind: KIND_OF[up.c] || null,
+                    heldMs: lastDown[e.b] ? up.t - lastDown[e.b].t : null, label: "other", pressedAfter: null });
+        awaitingRelease[e.b] = gaps.at(-1);
+      }
+      lastUp[e.b] = null; lastDown[e.b] = e;
+    } else if (e.k === "u") {
+      lastUp[e.b] = e;
+    }
+  }
+  return gaps;
+}
+
+function labelGaps(gaps) {
+  for (const g of gaps) {
+    if (!g.kind) { g.label = g.gap < 25 ? "bounce" : "other"; continue; }
+    if (g.kind === "hold") {
+      if (g.up.v === "break") {
+        g.label = g.gap < HUMAN_REGRAB_MS ? "chatter" : g.gap < RESUME_WINDOW_MS ? "unclear" : "regrab";
+      }
+      else if (g.up.v === "done") g.label = g.gap < BOUNCE_MS ? "bounce" : "other";
+      else g.label = g.gap < 25 ? "bounce" : "other";
+    } else if (g.kind === "single") {
+      g.label = g.gap < RESUME_WINDOW_MS && g.gapTravel < 30 ? "ghost" : "other";
+    }
+  }
+  // Bursts for the double and rapid courses.
+  for (const kind of ["double", "rapid"]) {
+    const limit = kind === "double" ? DOUBLE_BURST_MS : RAPID_BURST_MS;
+    let burst = [];
+    const flush = () => {
+      if (!burst.length) return;
+      const values = burst.map((g) => g.gap);
+      if (kind === "double") {
+        const largest = Math.max(...values);
+        for (const g of burst) g.label = g.gap === largest || g.gap >= 0.5 * largest ? "intentional" : "unclear";
+      } else {
+        const median = quantile(values, 0.5);
+        for (const g of burst) g.label = g.gap < 0.45 * median ? "unclear" : "intentional";
+      }
+      burst = [];
+    };
+    for (const g of gaps) {
+      if (g.kind !== kind || g.button !== 0) { flush(); continue; }
+      if (g.gap >= limit) { flush(); g.label = "other"; continue; }
+      if (burst.length && g.up.t - burst.at(-1).down.t > limit) flush();
+      burst.push(g);
+    }
+    flush();
+  }
+}
+
+function measureMotion(events, gaps) {
+  // Movement during each gap, travel since the start of the logical press
+  // (chatter does not restart it), and how regularly the mouse reported.
+  const byUp = new Map(gaps.map((g) => [g.up, g]));
+  const byDown = new Map(gaps.map((g) => [g.down, g]));
+  const chainTravel = [0, 0, 0], segmentTravel = [0, 0, 0];
+  const inChain = [false, false, false];
+  const openGap = [null, null, null];
+  let lastMove = null;
+  let currentCourse = null;
+  const intervals = [];
+  for (const e of events) {
+    if (e.k === "cs") currentCourse = e.c;
+    if (e.k === "ce") currentCourse = null;
+    if (e.k === "m") {
+      if (lastMove) {
+        const distance = Math.hypot(e.x - lastMove.x, e.y - lastMove.y);
+        for (let b = 0; b < 3; b++) {
+          if (inChain[b]) { chainTravel[b] += distance; segmentTravel[b] += distance; }
+          if (openGap[b]) { openGap[b].gapMoves += 1; openGap[b].gapTravel += distance; }
+        }
+        const dt = e.t - lastMove.t;
+        const onTrack = currentCourse === "trace";  // the only course where the hand keeps moving
+        if (onTrack && anyButtonHeld(inChain) && distance > 0 && dt > 0 && dt < 1000) intervals.push(dt);
+      }
+      lastMove = e;
+    } else if (e.k === "d") {
+      const g = byDown.get(e);
+      if (g) openGap[e.b] = null;
+      const continues = g && SPURIOUS.has(g.label);
+      if (!continues) chainTravel[e.b] = 0;
+      segmentTravel[e.b] = 0;
+      inChain[e.b] = true;
+    } else if (e.k === "u") {
+      const g = byUp.get(e);
+      if (g) {
+        g.travel = chainTravel[e.b]; g.pressTravel = segmentTravel[e.b];
+        g.gapMoves = 0; g.gapTravel = 0;
+        g.sinceLastMove = lastMove ? e.t - lastMove.t : null;
+        openGap[e.b] = g;
+      } else {
+        e.pressTravel = segmentTravel[e.b];
+      }
+      inChain[e.b] = false;
+    }
+  }
+  return intervals;
+}
+function anyButtonHeld(inChain) { return inChain[0] || inChain[1] || inChain[2]; }
+
+function replay(events, config) {
+  const outcomes = new Map();  // release time -> outcome
+  const core = new DebounceCore(config, (decision) => {
+    if (decision.button === "left") outcomes.set(decision.releaseAt, decision.outcome);
+  });
+  let lastMove = null;
+  for (const e of events) {
+    if (e.k === "m") {
+      if (lastMove) core.motion(e.x - lastMove.x, e.y - lastMove.y, e.t);
+      lastMove = e;
+    } else if (e.k === "d") core.press(BUTTON_NAMES[e.b], e.t);
+    else if (e.k === "u") core.release(BUTTON_NAMES[e.b], e.t);
+  }
+  return outcomes;
+}
+
+function scoreConfig(events, gaps, config) {
+  const outcomes = replay(events, config);
+  const score = { chatterFixed: 0, chatter: 0, clicksFixed: 0, clicks: 0, intentionalBroken: 0, intentional: 0,
+                  unclearMerged: 0, unclear: 0, regrabsGlued: 0 };
+  for (const g of gaps) {
+    if (g.button !== 0) continue;
+    const outcome = outcomes.get(g.up.t) || "passed";
+    const merged = outcome === "merged", hidden = merged || outcome === "blocked";
+    if (g.label === "chatter") { score.chatter += 1; if (merged) score.chatterFixed += 1; }
+    else if (g.label === "ghost" || g.label === "bounce") { score.clicks += 1; if (hidden) score.clicksFixed += 1; }
+    else if (g.label === "intentional") { score.intentional += 1; if (hidden) score.intentionalBroken += 1; }
+    else if (g.label === "unclear") { score.unclear += 1; if (hidden) score.unclearMerged += 1; }
+    else if (g.label === "regrab" && hidden) score.regrabsGlued += 1;
+  }
+  return score;
+}
+
+function suggestConfig(gaps, clickPressTravel) {
+  const notes = [];
+  const left = gaps.filter((g) => g.button === 0);
+  const travelP95 = quantile(clickPressTravel, 0.95);
+  const threshold = Math.min(60, Math.max(6, Math.ceil((travelP95 || 4) * 1.5 + 3)));
+  const spurious = left.filter((g) => SPURIOUS.has(g.label));
+  const still = spurious.filter((g) => g.travel < threshold);
+  const moving = spurious.filter((g) => g.travel >= threshold);
+  const intentional = left.filter((g) => g.label === "intentional").map((g) => g.gap);
+  const fastest = intentional.length ? Math.min(...intentional) : null;
+  if (fastest === null) notes.push("No double-click or rapid-click data yet, so the still window has no upper bound. Run courses 6 and 7.");
+
+  // How long the second press of a real double or rapid click lasts: the
+  // confirm window must be longer, or real clicks get merged.
+  const secondPress = left.filter((g) => g.label === "intentional" && g.pressedAfter !== null)
+                          .map((g) => g.pressedAfter);
+  const secondPressP95 = quantile(secondPress, 0.95);
+  const confirmMs = Math.min(300, Math.max(120, ceilTo((secondPressP95 || 100) * 1.3 + 10, 10)));
+
+  let stationaryMs = 0;
+  let stationaryMode = "hold";
+  if (still.length) {
+    const largestStill = Math.max(...still.map((g) => g.gap));
+    const needed = ceilTo(largestStill * 1.15 + 5, 5);
+    const ceiling = fastest === null ? 150 : floorTo(fastest - Math.max(15, 0.15 * fastest), 5);
+    stationaryMs = needed;
+    if (!still.some((g) => g.label === "chatter")) {
+      stationaryMode = "block";
+      stationaryMs = Math.min(needed, ceiling);
+      notes.push("Still-context chatter only appeared as ghost clicks or release bounces, so block mode (no added delay) is enough there.");
+    } else if (needed > ceiling) {
+      stationaryMode = "confirm";
+      stationaryMs = Math.min(needed, 150);
+      notes.push(`Still chatter (up to ${round1(largestStill)} ms) overlaps your fastest real gap (${round1(fastest)} ms), so time alone cannot separate them. Confirm mode decides by how long the next press lasts: let go within ${confirmMs} ms is a click, longer is the hold going on.`);
+    }
+    if (stationaryMs > 100) notes.push(`Every click's release arrives ${stationaryMs} ms late with this window. If that feels sluggish, lower stationary_ms and accept some unfixed still breaks.`);
+  } else {
+    notes.push("No chatter while still: the still window stays off, so clicks keep zero added delay.");
+  }
+
+  let movingMs = stationaryMode === "hold" ? stationaryMs : 0;
+  if (moving.length) {
+    const largest = Math.max(...moving.map((g) => g.gap));
+    movingMs = Math.max(movingMs, ceilTo(largest * 1.25 + 10, 5));
+    if (movingMs > 250) {
+      notes.push(`Moving chatter reached ${round1(largest)} ms. Windows above 250 ms risk gluing a drop to your next click; capped at 250. Long gaps can mean radio dropouts, not the switch.`);
+      movingMs = 250;
+    }
+  }
+  return {
+    config: {
+      schema: CONFIG_SCHEMA, device_name: "MX Vertical", moving_threshold: threshold,
+      buttons: {
+        left: { stationary_ms: stationaryMs, stationary_mode: stationaryMode, moving_ms: movingMs,
+                confirm_ms: confirmMs, bounce_ms: 30 },
+        right: { stationary_ms: 0, stationary_mode: "hold", moving_ms: 0, confirm_ms: 150, bounce_ms: 30 },
+        middle: { stationary_ms: 0, stationary_mode: "hold", moving_ms: 0, confirm_ms: 150, bounce_ms: 30 },
+      },
+    },
+    notes, threshold, fastest, still, moving, spurious, secondPress,
+  };
+}
+
+function describeGaps(values) {
+  if (!values.length) return "none";
+  const sorted = [...values].sort((a, b) => a - b);
+  return `${values.length}× ${round1(sorted[0])}–${round1(sorted.at(-1))} ms (median ${round1(quantile(sorted, 0.5))})`;
+}
+
+function environmentInfo() {
+  const ua = navigator.userAgent;
+  const os = /Windows/.test(ua) ? "Windows" : /Android/.test(ua) ? "Android" : /Linux/.test(ua) ? "Linux" : /Mac/.test(ua) ? "macOS" : "other";
+  const browserMatch = ua.match(/(Firefox|Edg|Chrome|Safari)\/(\d+)/);
+  const browser = browserMatch ? `${browserMatch[1] === "Edg" ? "Edge" : browserMatch[1]} ${browserMatch[2]}` : "unknown";
+  return { os, browser, dpr: dpr(), screen: `${screen.width}x${screen.height}` };
+}
+
+let lastAnalysis = null;
+
+function analyse() {
+  const events = recorder.events;
+  const gaps = collectGaps(events);
+  // gapTravel is needed by labelGaps (single course); measure once with
+  // provisional labels, label, then measure again for chained travel.
+  measureMotion(events, gaps);
+  labelGaps(gaps);
+  const intervals = measureMotion(events, gaps);
+
+  const clickPressTravel = [];
+  for (const e of events) {
+    if (e.k === "u" && e.b === 0 && ["single", "double", "rapid"].includes(KIND_OF[e.c])) {
+      const g = gaps.find((x) => x.up === e);
+      const travel = g ? g.pressTravel : e.pressTravel;
+      if (travel !== undefined) clickPressTravel.push(travel);
+    }
+  }
+  const suggestion = suggestConfig(gaps, clickPressTravel);
+  const loaded = loadedConfig;
+  const scoreSuggested = scoreConfig(events, gaps, suggestion.config);
+  const scoreLoaded = loaded ? scoreConfig(events, gaps, loaded) : null;
+  const scoreDefault = scoreConfig(events, gaps, normaliseConfig(DEFAULT_CONFIG));
+
+  const left = gaps.filter((g) => g.button === 0);
+  const chatter = left.filter((g) => g.label === "chatter");
+  const movingChatter = chatter.filter((g) => g.travel >= suggestion.threshold);
+  const aliveDuringGap = movingChatter.filter((g) => g.gapMoves > 0).length;
+  const holds = events.filter((e) => e.k === "u" && e.b === 0 && KIND_OF[e.c] === "hold" && e.v).length;
+  const stallCount = intervals.filter((dt) => dt >= 60).length;
+
+  lastAnalysis = {
+    events, gaps, left, chatter, suggestion, scoreSuggested, scoreLoaded, scoreDefault, intervals,
+    holds, aliveDuringGap, movingChatter, stallCount, clickPressTravel,
+    ghosts: left.filter((g) => g.label === "ghost"), bounces: left.filter((g) => g.label === "bounce"),
+    intentional: left.filter((g) => g.label === "intentional"),
+    unclear: left.filter((g) => g.label === "unclear"),
+    regrabs: left.filter((g) => g.label === "regrab"),
+  };
+  return lastAnalysis;
+}
+
+function scoreLine(score) {
+  return `fixes ${score.chatterFixed}/${score.chatter} drag/hold breaks and ${score.clicksFixed}/${score.clicks} ghost clicks, ` +
+         `swallows ${score.intentionalBroken}/${score.intentional} real clicks` +
+         (score.unclear ? `, merges ${score.unclearMerged}/${score.unclear} unclear` : "") +
+         (score.regrabsGlued ? `, glues ${score.regrabsGlued} re-grabs` : "");
+}
+
+function configLine(config) {
+  const l = config.buttons.left;
+  const mode = l.stationary_mode === "confirm"
+    ? `confirm: click if let go within ${l.confirm_ms} ms, bounce under ${l.bounce_ms} ms` : l.stationary_mode;
+  return `left still ${l.stationary_ms} ms (${mode}), moving ${l.moving_ms} ms, threshold ${config.moving_threshold}`;
+}
+
+function buildReport(a) {
+  const env = environmentInfo();
+  const s = a.suggestion;
+  const kindCourses = COURSES.map((c) => `${c.id} ${c.stats.successes}/${c.stats.total || "-"}`).join(", ");
+  const intentionalDouble = a.intentional.filter((g) => g.kind === "double").map((g) => g.gap);
+  const intentionalRapid = a.intentional.filter((g) => g.kind === "rapid").map((g) => g.gap);
+  const medianInterval = quantile(a.intervals, 0.5);
+  const filterState = $("filter-state").value;
+  const lines = [
+    `When: ${new Date().toISOString().slice(0, 16).replace("T", " ")} UTC · ${env.os}, ${env.browser}, scale ${env.dpr}`,
+    `Mouse: ${$("mouse-name").value} · link: ${$("mouse-link").value} · filter: ${filterState}` +
+      (filterState === "loaded" && loadedConfig ? ` (${configLine(loadedConfig)})` : ""),
+    `Courses: ${kindCourses}`,
+    `Breaks while holding: ${a.chatter.length} in ${a.holds} hold releases · gaps ${describeGaps(a.chatter.map((g) => g.gap))}`,
+    `  ${s.moving.filter((g) => g.label === "chatter").length} while moving, ${s.still.filter((g) => g.label === "chatter").length} while still (threshold ${s.threshold} px)`,
+    `Ghost clicks: ${describeGaps(a.ghosts.map((g) => g.gap))} · release bounces: ${describeGaps(a.bounces.map((g) => g.gap))}`,
+    `Real gaps: double-click ${describeGaps(intentionalDouble)} · rapid ${describeGaps(intentionalRapid)}`,
+    `  second press of those clicks lasted ${describeGaps(s.secondPress)}`,
+    `Unclear (in double/rapid bursts): ${describeGaps(a.unclear.map((g) => g.gap))} · re-grabs after a break: ${a.regrabs.length}`,
+    `Radio check: the mouse kept reporting motion during ${a.aliveDuringGap} of ${a.movingChatter.length} breaks in a drag` +
+      (a.movingChatter.length
+        ? (a.aliveDuringGap >= a.movingChatter.length * 0.7
+          ? " → the link stayed up, so the switch is to blame"
+          : " → silent gaps: a radio dropout, or the hand paused")
+        : ""),
+    `Motion reports on the track course: median ${medianInterval ? round1(medianInterval) : "–"} ms` +
+      (medianInterval ? ` (~${Math.round(1000 / medianInterval)} Hz)` : "") + `, ${a.stallCount} stall(s) ≥ 60 ms, longest ${round1(Math.max(0, ...a.intervals))} ms`,
+    `Suggested: ${configLine(s.config)}`,
+    `  ${scoreLine(a.scoreSuggested)}`,
+    `Built-in default (${configLine(normaliseConfig(DEFAULT_CONFIG))}): ${scoreLine(a.scoreDefault)}`,
+  ];
+  if (a.scoreLoaded) lines.push(`Loaded config (${configLine(loadedConfig)}): ${scoreLine(a.scoreLoaded)}`);
+  for (const note of s.notes) lines.push(`Note: ${note}`);
+  const userNotes = $("notes").value.trim();
+  if (userNotes) lines.push(`User notes: ${userNotes}`);
+
+  const rowLabels = new Set(["chatter", "ghost", "bounce", "unclear", "regrab"]);
+  const keep = a.left.filter((g) => g.course && rowLabels.has(g.label)).slice(-200);
+  const realGaps = (kind) => a.intentional.filter((g) => g.kind === kind).map((g) => round1(g.gap));
+  const json = {
+    schema: REPORT_SCHEMA,
+    env: { ...env, mouse: $("mouse-name").value, link: $("mouse-link").value, filter: filterState },
+    courses: Object.fromEntries(COURSES.map((c) => [c.id, { kind: c.kind, ok: c.stats.successes, of: c.stats.total, breaks: c.stats.breaks }])),
+    gap_columns: ["course", "label", "gap_ms", "travel_px", "press_travel_px", "held_ms", "moves_in_gap", "ms_since_move",
+                  "src", "pressed_after_ms"],
+    gaps: keep.map((g) => [g.course, g.label, round1(g.gap), Math.round(g.travel || 0), Math.round(g.pressTravel || 0),
+                           g.heldMs === null ? null : Math.round(g.heldMs), g.gapMoves || 0,
+                           g.sinceLastMove === null || g.sinceLastMove === undefined ? null : round1(g.sinceLastMove), g.up.src,
+                           g.pressedAfter === null ? null : Math.round(g.pressedAfter)]),
+    click_press_travel_px: { p50: round1(quantile(a.clickPressTravel, 0.5) || 0), p95: round1(quantile(a.clickPressTravel, 0.95) || 0), max: round1(Math.max(0, ...a.clickPressTravel)) },
+    motion_interval_ms: { p50: round1(quantile(a.intervals, 0.5) || 0), p95: round1(quantile(a.intervals, 0.95) || 0), p99: round1(quantile(a.intervals, 0.99) || 0), max: round1(Math.max(0, ...a.intervals)), n: a.intervals.length },
+    suggested_config: s.config,
+    real_gaps_ms: { double: realGaps("double"), rapid: realGaps("rapid") },
+    real_second_press_ms: a.suggestion.secondPress.map((value) => Math.round(value)),
+    loaded_config: loadedConfig,
+    scores: { suggested: a.scoreSuggested, loaded: a.scoreLoaded, built_in_default: a.scoreDefault },
+  };
+  const rule = "-".repeat(60);
+  return [
+    "MOUSE CHATTER COURSES REPORT · paste all of this to Claude",
+    rule, ...lines, rule, JSON.stringify(json), rule,
+  ].join("\n");
+}
+
+// ===========================================================================
+// Rendering results
+
+function drawHistogram(a) {
+  const svg = $("hist");
+  const width = 640, height = 230, left = 34, right = 10, mid = 112;
+  const plotWidth = width - left - right;
+  const bins = HIST_MAX_MS / HIST_BIN_MS;
+  const up = new Array(bins).fill(0), down = new Array(bins).fill(0), unclear = new Array(bins).fill(0);
+  const binOf = (gap) => Math.min(bins - 1, Math.floor(gap / HIST_BIN_MS));
+  for (const g of a.left) {
+    if (SPURIOUS.has(g.label)) up[binOf(g.gap)] += 1;
+    else if (g.label === "intentional") down[binOf(g.gap)] += 1;
+    else if (g.label === "unclear") unclear[binOf(g.gap)] += 1;
+  }
+  const peak = Math.max(1, ...up.map((v, i) => v + unclear[i]), ...down);
+  const barHeight = (count) => (count / peak) * 88;
+  const xOf = (ms) => left + (ms / HIST_MAX_MS) * plotWidth;
+  const parts = [];
+  for (let i = 0; i < bins; i++) {
+    const x = xOf(i * HIST_BIN_MS) + 1, w = plotWidth / bins - 2;
+    if (up[i]) parts.push(`<rect x="${x}" y="${mid - barHeight(up[i])}" width="${w}" height="${barHeight(up[i])}" style="fill:var(--break)"/>`);
+    if (unclear[i]) parts.push(`<rect x="${x}" y="${mid - barHeight(up[i]) - barHeight(unclear[i])}" width="${w}" height="${barHeight(unclear[i])}" style="fill:var(--warn)"/>`);
+    if (down[i]) parts.push(`<rect x="${x}" y="${mid + 1}" width="${w}" height="${barHeight(down[i])}" style="fill:var(--intent)"/>`);
+  }
+  parts.push(`<line x1="${left}" x2="${width - right}" y1="${mid}" y2="${mid}" style="stroke:var(--rule)"/>`);
+  for (let ms = 0; ms <= HIST_MAX_MS; ms += 50) {
+    parts.push(`<line x1="${xOf(ms)}" x2="${xOf(ms)}" y1="${mid - 3}" y2="${mid + 3}" style="stroke:var(--muted)"/>`);
+    const anchor = ms === HIST_MAX_MS ? "end" : "middle";
+    parts.push(`<text x="${xOf(ms)}" y="${height - 4}" text-anchor="${anchor}">${ms}${ms === HIST_MAX_MS ? "+" : ""}</text>`);
+  }
+  parts.push(`<text x="${left}" y="12">chatter ↑</text><text x="${left}" y="${height - 18}">real clicks ↓</text>`);
+  parts.push(`<text x="${width - right}" y="12" text-anchor="end">gap from release to next press, ms</text>`);
+  const marker = (ms, dashed, label) => {
+    if (!ms) return;
+    const x = xOf(Math.min(ms, HIST_MAX_MS));
+    parts.push(`<line x1="${x}" x2="${x}" y1="18" y2="${height - 20}" style="stroke:var(--accent)" stroke-width="2" ${dashed ? 'stroke-dasharray="5 4"' : ""}/>`);
+    parts.push(`<text x="${x + 4}" y="${dashed ? 40 : 28}" style="fill:var(--accent)">${label} ${ms}</text>`);
+  };
+  const suggested = a.suggestion.config.buttons.left;
+  marker(suggested.stationary_ms, false, "still");
+  if (suggested.moving_ms !== suggested.stationary_ms) marker(suggested.moving_ms, false, "moving");
+  if (loadedConfig) {
+    marker(loadedConfig.buttons.left.stationary_ms, true, "loaded still");
+    if (loadedConfig.buttons.left.moving_ms !== loadedConfig.buttons.left.stationary_ms) marker(loadedConfig.buttons.left.moving_ms, true, "loaded moving");
+  }
+  svg.innerHTML = parts.join("");
+}
+
+function analyseAndRender() {
+  const a = analyse();
+  const s = a.suggestion.config.buttons.left;
+  $("fig-breaks").textContent = String(a.chatter.length);
+  $("fig-ghosts").textContent = String(a.ghosts.length);
+  $("fig-fastest").textContent = a.suggestion.fastest === null ? "–" : `${Math.round(a.suggestion.fastest)} ms`;
+  $("fig-suggest").textContent = `${s.stationary_ms} / ${s.moving_ms}`;
+  drawHistogram(a);
+  const report = buildReport(a);
+  $("report").value = report;
+  $("summary").textContent = report.split("\n").slice(2, -3).join("\n");
+}
+
+$("btn-analyse").addEventListener("click", analyseAndRender);
+
+$("btn-copy").addEventListener("click", async () => {
+  if (!$("report").value) analyseAndRender();
+  const text = $("report").value;
+  try {
+    await navigator.clipboard.writeText(text);
+    $("copy-status").textContent = `Copied ${text.length.toLocaleString()} characters.`;
+  } catch (error) {
+    $("report").focus(); $("report").select();
+    $("copy-status").textContent = "Selected. Press Ctrl+C to copy.";
+  }
+});
+
+$("btn-copy-config").addEventListener("click", async () => {
+  if (!lastAnalysis) analyseAndRender();
+  const text = JSON.stringify(lastAnalysis.suggestion.config, null, 2);
+  try {
+    await navigator.clipboard.writeText(text);
+    $("config-status").textContent = "Copied the suggested config.";
+  } catch (error) {
+    $("config-in").value = text; $("config-in").select();
+    $("config-status").textContent = "Placed in the box and selected. Press Ctrl+C.";
+  }
+});
+
+// Raw log, only where the browser lets the page save a file (the offline copy).
+if (location.protocol === "file:") {
+  $("btn-download").hidden = false;
+  $("btn-download").addEventListener("click", () => {
+    const blob = new Blob([JSON.stringify({ schema: "mouse-courses-raw/1", env: environmentInfo(), events: recorder.events })],
+                          { type: "application/json" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `mouse-courses-raw-${Date.now()}.json`;
+    link.click();
+  });
+}
+
+// ===========================================================================
+// Config paste-in
+
+let loadedConfig = null;
+
+function loadConfigFromText(text, quiet) {
+  try {
+    loadedConfig = parseConfigText(text);
+    storageSet("mouse-courses.config", JSON.stringify(loadedConfig));
+    $("config-status").className = "status good";
+    $("config-status").textContent = `Loaded: ${configLine(loadedConfig)}.`;
+    if (!quiet) analyseAndRender();
+  } catch (error) {
+    $("config-status").className = "status bad";
+    const hint = error instanceof SyntaxError || /JSON object/.test(error.message)
+      ? " Paste the whole block, braces included." : "";
+    $("config-status").textContent = `Could not use that: ${error.message}.${hint}`;
+  }
+}
+$("btn-load-config").addEventListener("click", () => loadConfigFromText($("config-in").value));
+$("config-in").addEventListener("paste", () => setTimeout(() => loadConfigFromText($("config-in").value), 0));
+
+for (const id of ["mouse-name", "mouse-link", "filter-state"]) {
+  const saved = storageGet(`mouse-courses.${id}`);
+  if (saved !== null) $(id).value = saved;
+  $(id).addEventListener("change", () => storageSet(`mouse-courses.${id}`, $(id).value));
+}
+const savedConfig = storageGet("mouse-courses.config");
+if (savedConfig) { $("config-in").value = JSON.stringify(JSON.parse(savedConfig), null, 2); loadConfigFromText(savedConfig, true); }
+
+showCourse();
+analyseAndRender();
+</script>
+
+</body>
+</html>
