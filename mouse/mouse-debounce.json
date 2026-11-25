@@ -1,13 +1,13 @@
 {
   "schema": "mouse-debounce/1",
-  "note": "Tuned 2026-11-25 from the second course report (Ubuntu, Firefox, filter on)",
+  "note": "Tuned 2026-11-25 from the second course report (Ubuntu, Firefox, filter on); moving_ms 110 for less drop lag",
   "device_name": "MX Vertical",
   "moving_threshold": 12,
   "settled_ms": 0,
   "min_output_gap_ms": 40,
   "buttons": {
     "left": {"stationary_ms": 85, "stationary_mode": "confirm",
-             "confirm_ms": 220, "bounce_ms": 30, "moving_ms": 160},
+             "confirm_ms": 220, "bounce_ms": 30, "moving_ms": 110},
     "right": {"stationary_ms": 0, "stationary_mode": "hold", "moving_ms": 0},
     "middle": {"stationary_ms": 0, "stationary_mode": "hold", "moving_ms": 0}
   }
