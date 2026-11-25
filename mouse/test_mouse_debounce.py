@@ -55,12 +55,13 @@ class HoldMode(unittest.TestCase):
 
     def test_double_click_survives(self):
         rec = Recorder(make_config()).run([
-            ("press", 0), ("release", 80), ("press", 200), ("release", 280),
-            ("tick", 400),
+            ("press", 0), ("release", 80), ("press", 200), ("tick", 241),
+            ("release", 280), ("tick", 339), ("tick", 340),
         ])
-        # The first release is delivered (late) just before the second press.
+        # The timer was late, so the first release goes out at 200; the
+        # second press then waits the 40 ms output gap.
         self.assertEqual(rec.output, [(PRESS, 0), (RELEASE, 200),
-                                      (PRESS, 200), (RELEASE, 400)])
+                                      (PRESS, 241), (RELEASE, 340)])
         self.assertEqual(rec.decisions[0]["outcome"], "passed")
 
     def test_stationary_window_is_shorter_than_moving(self):
@@ -82,9 +83,11 @@ class HoldMode(unittest.TestCase):
 
     def test_zero_window_passes_everything(self):
         rec = Recorder(make_config(0, 0)).run([
-            ("press", 0), ("release", 50), ("press", 60), ("release", 70)])
-        self.assertEqual([k for k, _ in rec.output],
-                         [PRESS, RELEASE, PRESS, RELEASE])
+            ("press", 0), ("release", 50), ("press", 60), ("release", 70),
+            ("tick", 90), ("tick", 129), ("tick", 130)])
+        # Nothing is dropped, but the pair is spread to the output gap.
+        self.assertEqual(rec.output, [(PRESS, 0), (RELEASE, 50),
+                                      (PRESS, 90), (RELEASE, 130)])
 
     def test_shutdown_releases_held_buttons(self):
         rec = Recorder(make_config()).run([("press", 0), ("release", 10)])
@@ -123,10 +126,12 @@ class ConfirmMode(unittest.TestCase):
     def test_fast_double_click_is_delivered(self):
         rec = Recorder(self.config()).run([
             ("press", 0), ("release", 60), ("press", 112), ("release", 180),
-            ("tick", 264), ("tick", 266),
+            ("tick", 219), ("tick", 220), ("tick", 264), ("tick", 266),
         ])
+        # Release and press 40 ms apart, never in one frame: libinput
+        # would merge them and the double-click would be lost.
         self.assertEqual(rec.output, [(PRESS, 0), (RELEASE, 180),
-                                      (PRESS, 180), (RELEASE, 266)])
+                                      (PRESS, 220), (RELEASE, 266)])
         self.assertEqual(rec.decisions[0]["outcome"], "passed")
 
     def test_chatter_in_a_still_hold_is_merged(self):
@@ -153,14 +158,17 @@ class ConfirmMode(unittest.TestCase):
         ])
         self.assertEqual(rec.output, [(PRESS, 0), (RELEASE, 197)])
 
-    def test_windows_hook_injects_both_clicks_in_order(self):
+    def test_windows_hook_injects_both_clicks_apart(self):
         logic = md.WindowsHookLogic(md.DebounceCore(self.config()))
         down, up = 0x0201, 0x0202
         self.assertEqual(logic.handle(down, 0, 0, 0, 0, 0.0), (True, []))
         self.assertEqual(logic.handle(up, 0, 0, 0, 0, 0.060), (False, []))
         self.assertEqual(logic.handle(down, 0, 0, 0, 0, 0.112), (False, []))
-        self.assertEqual(logic.handle(up, 0, 0, 0, 0, 0.180),
-                         (False, [(RELEASE, "left"), (PRESS, "left")]))
+        # The real release passes; the press follows from the worker.
+        self.assertEqual(logic.handle(up, 0, 0, 0, 0, 0.180), (True, []))
+        self.assertAlmostEqual(logic.core.next_deadline(), 0.220)
+        self.assertEqual(logic.core.due(0.220), [(PRESS, "left")])
+        self.assertEqual(logic.core.due(0.266), [(RELEASE, "left")])
 
 
 class WindowsLogic(unittest.TestCase):
@@ -176,9 +184,11 @@ class WindowsLogic(unittest.TestCase):
         self.assertEqual(self.handle(up, 50), (False, []))   # held back
         self.assertEqual(self.handle(down, 80), (False, []))  # merged
         self.assertEqual(self.handle(up, 100), (False, []))
-        # Window ran out but the worker has not run yet: inject in order.
+        # Window ran out but the worker has not run yet: the release goes
+        # first, and the press follows once the output gap has passed.
         self.assertEqual(self.handle(down, 300),
-                         (False, [(RELEASE, "left"), (PRESS, "left")]))
+                         (False, [(RELEASE, "left")]))
+        self.assertEqual(self.logic.core.due(0.340), [(PRESS, "left")])
 
     def test_injected_pen_and_touch_pass_untouched(self):
         self.assertEqual(self.handle(0x0202, 0, flags=md.LLMHF_INJECTED),
@@ -191,6 +201,66 @@ class WindowsLogic(unittest.TestCase):
         self.handle(0x0201, 1, x=0, y=0)
         self.handle(0x0200, 10, x=30, y=40)
         self.assertEqual(self.logic.core.buttons["left"].travel, 50)
+
+
+class OutputGap(unittest.TestCase):
+    """No release and press (either order) closer than min_output_gap_ms
+    once a press has been deferred."""
+
+    def test_late_timer_does_not_send_press_and_release_together(self):
+        rec = Recorder(make_config(stationary_ms=60)).run([
+            ("press", 0), ("release", 80), ("press", 200), ("release", 210),
+            ("tick", 400),   # the timer is very late: everything is due
+            ("tick", 439), ("tick", 440),
+        ])
+        self.assertEqual(rec.output, [(PRESS, 0), (RELEASE, 200),
+                                      (PRESS, 400), (RELEASE, 440)])
+
+    def test_block_mode_release_waits_for_a_deferred_press(self):
+        rec = Recorder(make_config(stationary_ms=20, mode="block")).run([
+            ("press", 0), ("release", 100), ("press", 125), ("release", 135),
+            ("tick", 141), ("tick", 180), ("tick", 181),
+        ])
+        self.assertEqual(rec.output, [(PRESS, 0), (RELEASE, 100),
+                                      (PRESS, 141), (RELEASE, 181)])
+
+    def test_gap_can_be_turned_off(self):
+        config = make_config(0, 0)
+        config["min_output_gap_ms"] = 0.0
+        rec = Recorder(config).run([
+            ("press", 0), ("release", 50), ("press", 60), ("release", 70)])
+        self.assertEqual(rec.output, [(PRESS, 0), (RELEASE, 50),
+                                      (PRESS, 60), (RELEASE, 70)])
+
+
+class Settled(unittest.TestCase):
+    """settled_ms: a drop after the pointer stopped uses the still window."""
+
+    def config(self, settled_ms):
+        config = make_config(stationary_ms=60, moving_ms=200)
+        config["settled_ms"] = float(settled_ms)
+        return config
+
+    def test_drop_after_stopping_is_quick(self):
+        rec = Recorder(self.config(50)).run([
+            ("press", 0), ("move", 100, 300), ("release", 400),
+            ("tick", 460),
+        ])
+        self.assertEqual(rec.output, [(PRESS, 0), (RELEASE, 460)])
+
+    def test_drop_while_moving_keeps_the_long_window(self):
+        rec = Recorder(self.config(50)).run([
+            ("press", 0), ("move", 100, 300), ("move", 390, 5),
+            ("release", 400), ("tick", 460), ("tick", 601),
+        ])
+        self.assertEqual(rec.output, [(PRESS, 0), (RELEASE, 601)])
+
+    def test_off_by_default(self):
+        rec = Recorder(self.config(0)).run([
+            ("press", 0), ("move", 100, 300), ("release", 400),
+            ("tick", 460), ("tick", 601),
+        ])
+        self.assertEqual(rec.output, [(PRESS, 0), (RELEASE, 601)])
 
 
 class Config(unittest.TestCase):

@@ -25,7 +25,15 @@ Which window applies is decided at the moment of the release: if the
 pointer has travelled at least `moving_threshold` since the button went
 down, the press is a drag and `moving_ms` (always hold mode) is used,
 otherwise `stationary_ms` with `stationary_mode`. Drags get a longer window
-because nobody double-clicks while dragging.
+because nobody double-clicks while dragging. With `settled_ms` set, a drag
+release counts as still once the pointer has not moved for that long, so a
+drop after stopping waits the shorter still window.
+
+Whatever the filter sends, a press never follows a release by less than
+`min_output_gap_ms` (40 ms by default): it waits, and so does the release
+after it. libinput nets out a release and press that arrive in one frame,
+and debounces pairs closer than about 25 ms, so without the gap a fast
+double-click reached the desktop as one long click.
 
 The numbers come from the obstacle courses in mouse_courses.html, which
 print a config block for this file. See README.md.
@@ -63,6 +71,14 @@ DEFAULT_CONFIG = {
     "schema": CONFIG_SCHEMA,
     "device_name": "MX Vertical",
     "moving_threshold": 12,
+    # A drag release counts as "still" if the pointer has not moved for
+    # this long (0 = off). Drops then wait the short still window.
+    "settled_ms": 0,
+    # Never send a release and the next press closer together than this.
+    # libinput merges or drops a pair that arrives in one frame or within
+    # its own debounce time (12-25 ms, read from its debounce docs), which
+    # cost the owner fast double-clicks on 2026-11-25.
+    "min_output_gap_ms": 40,
     "buttons": {
         # 2026-10-27 evtest capture on the MX Vertical showed 46-52 ms
         # release->press gaps mid-drag; these defaults cover that until the
@@ -114,7 +130,8 @@ def normalise_config(raw):
     schema = raw.get("schema", CONFIG_SCHEMA)
     if schema != CONFIG_SCHEMA:
         raise ValueError(f"expected schema {CONFIG_SCHEMA}, got {schema}")
-    for key in ("device_name", "moving_threshold"):
+    for key in ("device_name", "moving_threshold", "settled_ms",
+                "min_output_gap_ms"):
         if key in raw:
             config[key] = raw[key]
     for name, policy in raw.get("buttons", {}).items():
@@ -132,7 +149,10 @@ def normalise_config(raw):
                 raise ValueError(f"{name}.{field} must be 0-1000 ms")
             merged[field] = value
         config["buttons"][name] = merged
-    config["moving_threshold"] = float(config["moving_threshold"])
+    for key in ("moving_threshold", "settled_ms", "min_output_gap_ms"):
+        config[key] = float(config[key])
+        if not 0 <= config[key] <= 1000:
+            raise ValueError(f"{key} must be 0-1000")
     return config
 
 
@@ -160,7 +180,7 @@ class ButtonState:
         self.policy = policy
         self.logically_down = False  # what the desktop believes
         self.travel = 0.0            # since the logical press
-        self.pending_release_at = None   # raw release time (hold mode)
+        self.pending_release_at = None   # raw release time (hold, confirm)
         self.pending_deadline = None
         self.pending_context = None
         self.pending_window_ms = 0.0
@@ -177,6 +197,9 @@ class ButtonState:
         self.last_release_context = None
         self.last_release_window_ms = 0.0
         self.last_release_travel = 0.0
+        self.last_release_out_at = None  # when the desktop last got a release
+        self.deferred_press_at = None    # a press waiting for the output gap
+        self.release_not_before = None   # a late press needs its own gap
 
 
 class DebounceCore:
@@ -185,6 +208,9 @@ class DebounceCore:
     def __init__(self, config, on_decision=None):
         self.config = config
         self.threshold = config["moving_threshold"]
+        self.settled_s = config["settled_ms"] / 1000
+        self.output_gap_s = config["min_output_gap_ms"] / 1000
+        self.last_motion_at = None
         self.buttons = {name: ButtonState(config["buttons"][name])
                         for name in BUTTON_NAMES}
         self.on_decision = on_decision or (lambda decision: None)
@@ -201,28 +227,55 @@ class DebounceCore:
             "travel": round(travel, 1),
         })
 
-    def _context_for_release(self, state):
-        if state.travel >= self.threshold:
+    def _context_for_release(self, state, now):
+        settled = (self.settled_s > 0 and (
+            self.last_motion_at is None
+            or now - self.last_motion_at >= self.settled_s))
+        if state.travel >= self.threshold and not settled:
             return "moving", state.policy["moving_ms"], "hold"
         return ("stationary", state.policy["stationary_ms"],
                 state.policy["stationary_mode"])
 
-    # -- public API -------------------------------------------------------
+    def _flush_deferred_press(self, name, state, now, output):
+        output.append((PRESS, name))
+        state.deferred_press_at = None
+        # Do not follow a late press with its release in the same frame.
+        state.release_not_before = now + self.output_gap_s
 
-    def due(self, now):
-        """Releases whose hold window has run out by `now`."""
-        output = []
-        for name, state in self.buttons.items():
-            deadline = state.pending_deadline
-            if deadline is not None and deadline <= now:
-                state.pending_deadline = None
-                state.pending_release_at = None
-                state.logically_down = False
-                output.append((RELEASE, name))
-            confirm = state.confirm_deadline
-            if confirm is not None and confirm <= now:
-                self._merge_confirmed(name, state)  # held on: the hold goes on
-        return output
+    def _press_still_settling(self, state, now):
+        """True while the last press has not had its output gap yet, so a
+        release must wait instead of going out at once."""
+        if state.deferred_press_at is not None:
+            return True
+        return (state.release_not_before is not None
+                and now < state.release_not_before)
+
+    def _send_release(self, name, state, now, output):
+        if state.deferred_press_at is not None:
+            # Only on shutdown or a very fast confirm click: the press still
+            # waits for its gap, and it must come first.
+            self._flush_deferred_press(name, state, now, output)
+        output.append((RELEASE, name))
+        state.last_release_out_at = now
+
+    def _send_press(self, name, state, now, output):
+        last = state.last_release_out_at
+        if last is not None and now - last < self.output_gap_s:
+            state.deferred_press_at = last + self.output_gap_s
+        else:
+            output.append((PRESS, name))
+
+    def _release_due_at(self, state):
+        """When the held release may go out: its window, and never before
+        the deferred press has had its own gap."""
+        if state.pending_deadline is None:
+            return None
+        if state.deferred_press_at is not None:
+            return max(state.pending_deadline,
+                       state.deferred_press_at + self.output_gap_s)
+        if state.release_not_before is not None:
+            return max(state.pending_deadline, state.release_not_before)
+        return state.pending_deadline
 
     def _merge_confirmed(self, button, state):
         self._decide(button, state.confirm_gap, "merged",
@@ -232,16 +285,42 @@ class DebounceCore:
         state.confirm_press_at = None
         state.pending_release_at = None
 
+    # -- public API -------------------------------------------------------
+
+    def due(self, now):
+        """Output that has become due by `now`: deferred presses, then
+        releases whose window has run out."""
+        output = []
+        for name, state in self.buttons.items():
+            if (state.deferred_press_at is not None
+                    and state.deferred_press_at <= now):
+                self._flush_deferred_press(name, state, now, output)
+            release_at = self._release_due_at(state)
+            if release_at is not None and release_at <= now:
+                state.pending_deadline = None
+                state.pending_release_at = None
+                state.logically_down = False
+                self._send_release(name, state, now, output)
+            confirm = state.confirm_deadline
+            if confirm is not None and confirm <= now:
+                self._merge_confirmed(name, state)  # held on: the hold goes on
+        return output
+
     def next_deadline(self):
-        deadlines = [deadline for state in self.buttons.values()
-                     for deadline in (state.pending_deadline,
-                                      state.confirm_deadline)
-                     if deadline is not None]
+        deadlines = []
+        for state in self.buttons.values():
+            for deadline in (self._release_due_at(state),
+                             state.confirm_deadline,
+                             state.deferred_press_at):
+                if deadline is not None:
+                    deadlines.append(deadline)
         return min(deadlines) if deadlines else None
 
     def motion(self, dx, dy, now):
         output = self.due(now)
         distance = math.hypot(dx, dy)
+        if distance > 0:
+            self.last_motion_at = now
         for name, state in self.buttons.items():
             if state.logically_down:
                 state.travel += distance
@@ -290,7 +369,7 @@ class DebounceCore:
         state.block_until = None
         state.logically_down = True
         state.travel = 0.0
-        output.append((PRESS, button))
+        self._send_press(button, state, now, output)
         return output
 
     def release(self, button, now):
@@ -318,28 +397,34 @@ class DebounceCore:
                 state.pending_release_at = now
                 state.pending_deadline = now + state.pending_window_ms / 1000
                 return output
-            # A real click: deliver the held release and this press, then
-            # treat this release like any other.
+            # A real click: deliver the held release and this press (after
+            # the output gap), then treat this release like any other.
             self._decide(button, state.confirm_gap, "passed",
                          state.pending_context, state.pending_window_ms,
                          state.travel)
-            output += [(RELEASE, button), (PRESS, button)]
+            self._send_release(button, state, now, output)
+            self._send_press(button, state, now, output)
             state.travel -= state.confirm_travel_start
             state.pending_release_at = None
 
         if not state.logically_down:
-            output.append((RELEASE, button))  # nothing to protect
+            self._send_release(button, state, now, output)  # nothing to hold
             return output
 
-        context, window_ms, mode = self._context_for_release(state)
+        context, window_ms, mode = self._context_for_release(state, now)
         state.last_release_context = context
         state.last_release_window_ms = window_ms
         state.last_release_travel = state.travel
 
-        if window_ms <= 0:
+        settling = self._press_still_settling(state, now)
+        if settling and (window_ms <= 0 or mode == "block"):
+            # The press has not had its gap yet: hold this release until it
+            # has, as a zero-length hold window.
+            window_ms, mode = 0.0, "hold"
+        if window_ms <= 0 and not settling:
             state.logically_down = False
-            output.append((RELEASE, button))
-        elif mode in ("hold", "confirm"):
+            self._send_release(button, state, now, output)
+        elif mode in ("hold", "confirm") or settling:
             state.pending_release_at = now
             state.pending_deadline = now + window_ms / 1000
             state.pending_context = context
@@ -350,19 +435,19 @@ class DebounceCore:
             state.block_until = now + window_ms / 1000
             state.block_context = context
             state.block_window_ms = window_ms
-            output.append((RELEASE, button))
+            self._send_release(button, state, now, output)
         return output
 
     def release_everything(self):
         """On shutdown: never leave a button stuck down."""
         output = []
         for name, state in self.buttons.items():
-            if state.logically_down:
+            if state.logically_down or state.deferred_press_at is not None:
                 state.pending_deadline = None
                 state.pending_release_at = None
                 state.confirm_deadline = None
                 state.logically_down = False
-                output.append((RELEASE, name))
+                self._send_release(name, state, 0.0, output)
         return output
 
 
@@ -497,8 +582,7 @@ def run_linux(config, statistics, observe):
             for kind, name in outputs:
                 virtual.write(ecodes.EV_KEY, name_to_code[name],
                               1 if kind == PRESS else 0)
-            if outputs:
-                virtual.syn()
+                virtual.syn()  # own frame: libinput nets out a 0-1 frame
 
         try:
             if not observe:
@@ -801,7 +885,10 @@ def run_windows(config, statistics, observe):
 
 
 def describe(config):
-    lines = [f"moving threshold: {config['moving_threshold']:g}"]
+    settled = (f"settled after {config['settled_ms']:g} ms still"
+               if config["settled_ms"] > 0 else "settled off")
+    lines = [f"moving threshold: {config['moving_threshold']:g}, {settled}, "
+             f"output gap {config['min_output_gap_ms']:g} ms"]
     for name in BUTTON_NAMES:
         policy = config["buttons"][name]
         if policy["stationary_ms"] <= 0 and policy["moving_ms"] <= 0:

@@ -147,6 +147,16 @@ At each release of the left button the filter decides which window applies:
   little late, still well inside the system's double-click time). Held
   longer, or moved, and it was the hold going on, so the gap is merged. A
   press shorter than `bounce_ms` is contact bounce and is dropped.
+- A press is never sent sooner than `min_output_gap_ms` (default 40) after
+  a release; it waits, and the release after it waits too. libinput merges
+  a release and press that reach it together and debounces pairs closer
+  than about 25 ms (https://wayland.freedesktop.org/libinput/doc/1.9.0/button_debouncing.html),
+  which is why fast double-clicks used to arrive as one long click.
+- `settled_ms` (default 0, off) makes a drag release count as still once
+  the pointer has not moved for that long, so a drop after stopping waits
+  the still window instead of the moving one. It only helps if your chatter
+  never comes while the pointer pauses mid-drag; the page measures both and
+  suggests a value only when that holds.
 - The still window must stay below your fastest real double-click gap, or
   double-clicks turn into single clicks. The page measures both sides and
   reports a conflict if they overlap, which means software cannot fully

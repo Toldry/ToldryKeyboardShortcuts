@@ -365,6 +365,8 @@ const DEFAULT_CONFIG = {
   schema: CONFIG_SCHEMA,
   device_name: "MX Vertical",
   moving_threshold: 12,
+  settled_ms: 0,          // a drag release counts as still after this long without motion
+  min_output_gap_ms: 40,  // never send release and press closer (libinput merges them)
   buttons: {
     left: { stationary_ms: 60, stationary_mode: "hold", moving_ms: 90, confirm_ms: 150, bounce_ms: 30 },
     right: { stationary_ms: 0, stationary_mode: "hold", moving_ms: 0, confirm_ms: 150, bounce_ms: 30 },
@@ -401,6 +403,9 @@ function storageSet(key, value) {
 class DebounceCore {
   constructor(config, onDecision) {
     this.threshold = config.moving_threshold;
+    this.settledMs = config.settled_ms || 0;
+    this.outputGap = config.min_output_gap_ms || 0;
+    this.lastMotionAt = null;
     this.onDecision = onDecision || (() => {});
     this.buttons = {};
     for (const name of ["left", "right", "middle"]) {
@@ -411,15 +416,45 @@ class DebounceCore {
         confirmTravelStart: 0,
         blockUntil: null, blockContext: null, blockWindow: 0, swallowing: false,
         lastRawReleaseAt: null, lastReleaseContext: null, lastReleaseWindow: 0, lastReleaseTravel: 0,
+        lastReleaseOutAt: null, deferredPressAt: null, releaseNotBefore: null,
       };
     }
   }
   decide(button, releaseAt, gapMs, outcome, context, windowMs, travel) {
     this.onDecision({ button, releaseAt, gapMs, outcome, context, windowMs, travel });
   }
-  contextForRelease(state) {
-    if (state.travel >= this.threshold) return ["moving", state.policy.moving_ms, "hold"];
+  contextForRelease(state, now) {
+    const settled = this.settledMs > 0 &&
+      (this.lastMotionAt === null || now - this.lastMotionAt >= this.settledMs);
+    if (state.travel >= this.threshold && !settled) return ["moving", state.policy.moving_ms, "hold"];
     return ["stationary", state.policy.stationary_ms, state.policy.stationary_mode];
+  }
+  flushDeferredPress(name, state, now, output) {
+    output.push(["press", name]);
+    state.deferredPressAt = null;
+    state.releaseNotBefore = now + this.outputGap;
+  }
+  pressStillSettling(state, now) {
+    if (state.deferredPressAt !== null) return true;
+    return state.releaseNotBefore !== null && now < state.releaseNotBefore;
+  }
+  sendRelease(name, state, now, output) {
+    if (state.deferredPressAt !== null) this.flushDeferredPress(name, state, now, output);
+    output.push(["release", name]);
+    state.lastReleaseOutAt = now;
+  }
+  sendPress(name, state, now, output) {
+    const last = state.lastReleaseOutAt;
+    if (last !== null && now - last < this.outputGap) state.deferredPressAt = last + this.outputGap;
+    else output.push(["press", name]);
+  }
+  releaseDueAt(state) {
+    if (state.pendingDeadline === null) return null;
+    if (state.deferredPressAt !== null) {
+      return Math.max(state.pendingDeadline, state.deferredPressAt + this.outputGap);
+    }
+    if (state.releaseNotBefore !== null) return Math.max(state.pendingDeadline, state.releaseNotBefore);
+    return state.pendingDeadline;
   }
   mergeConfirmed(button, state) {
     this.decide(button, state.pendingReleaseAt, state.confirmGap, "merged", state.pendingContext,
@@ -429,9 +464,13 @@ class DebounceCore {
   due(now) {
     const output = [];
     for (const [name, state] of Object.entries(this.buttons)) {
-      if (state.pendingDeadline !== null && state.pendingDeadline <= now) {
+      if (state.deferredPressAt !== null && state.deferredPressAt <= now) {
+        this.flushDeferredPress(name, state, now, output);
+      }
+      const releaseAt = this.releaseDueAt(state);
+      if (releaseAt !== null && releaseAt <= now) {
         state.pendingDeadline = null; state.pendingReleaseAt = null; state.logicallyDown = false;
-        output.push(["release", name]);
+        this.sendRelease(name, state, now, output);
       }
       if (state.confirmDeadline !== null && state.confirmDeadline <= now) this.mergeConfirmed(name, state);
     }
@@ -440,14 +479,16 @@ class DebounceCore {
   nextDeadline() {
     const deadlines = [];
     for (const state of Object.values(this.buttons)) {
-      if (state.pendingDeadline !== null) deadlines.push(state.pendingDeadline);
-      if (state.confirmDeadline !== null) deadlines.push(state.confirmDeadline);
+      for (const deadline of [this.releaseDueAt(state), state.confirmDeadline, state.deferredPressAt]) {
+        if (deadline !== null) deadlines.push(deadline);
+      }
     }
     return deadlines.length ? Math.min(...deadlines) : null;
   }
   motion(dx, dy, now) {
     const output = this.due(now);
     const distance = Math.hypot(dx, dy);
+    if (distance > 0) this.lastMotionAt = now;
     for (const [name, state] of Object.entries(this.buttons)) {
       if (state.logicallyDown) state.travel += distance;
       const moved = state.travel - state.confirmTravelStart;
@@ -481,7 +522,7 @@ class DebounceCore {
                   state.lastReleaseContext, state.lastReleaseWindow, state.lastReleaseTravel);
     }
     state.blockUntil = null; state.logicallyDown = true; state.travel = 0;
-    output.push(["press", button]);
+    this.sendPress(button, state, now, output);
     return output;
   }
   release(button, now) {
@@ -504,23 +545,26 @@ class DebounceCore {
       }
       this.decide(button, state.pendingReleaseAt, state.confirmGap, "passed", state.pendingContext,
                   state.pendingWindow, state.travel);
-      output.push(["release", button], ["press", button]);
+      this.sendRelease(button, state, now, output);
+      this.sendPress(button, state, now, output);
       state.travel -= state.confirmTravelStart;
       state.pendingReleaseAt = null;
     }
-    if (!state.logicallyDown) { output.push(["release", button]); return output; }
-    const [context, windowMs, mode] = this.contextForRelease(state);
+    if (!state.logicallyDown) { this.sendRelease(button, state, now, output); return output; }
+    let [context, windowMs, mode] = this.contextForRelease(state, now);
     state.lastReleaseContext = context; state.lastReleaseWindow = windowMs;
     state.lastReleaseTravel = state.travel;
-    if (windowMs <= 0) {
-      state.logicallyDown = false; output.push(["release", button]);
-    } else if (mode === "hold" || mode === "confirm") {
+    const settling = this.pressStillSettling(state, now);
+    if (settling && (windowMs <= 0 || mode === "block")) { windowMs = 0; mode = "hold"; }
+    if (windowMs <= 0 && !settling) {
+      state.logicallyDown = false; this.sendRelease(button, state, now, output);
+    } else if (mode === "hold" || mode === "confirm" || settling) {
       state.pendingReleaseAt = now; state.pendingDeadline = now + windowMs;
       state.pendingContext = context; state.pendingWindow = windowMs; state.pendingMode = mode;
     } else {
       state.logicallyDown = false; state.blockUntil = now + windowMs;
       state.blockContext = context; state.blockWindow = windowMs;
-      output.push(["release", button]);
+      this.sendRelease(button, state, now, output);
     }
     return output;
   }
@@ -540,7 +584,9 @@ function normaliseConfig(raw) {
   if (raw.schema && raw.schema !== CONFIG_SCHEMA) throw new Error(`expected schema ${CONFIG_SCHEMA}`);
   const config = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
   if (raw.device_name) config.device_name = raw.device_name;
-  if (raw.moving_threshold !== undefined) config.moving_threshold = Number(raw.moving_threshold);
+  for (const key of ["moving_threshold", "settled_ms", "min_output_gap_ms"]) {
+    if (raw[key] !== undefined) config[key] = Number(raw[key]);
+  }
   for (const [name, policy] of Object.entries(raw.buttons || {})) {
     if (!config.buttons[name]) throw new Error(`unknown button ${name}`);
     const merged = { ...config.buttons[name], ...policy };
@@ -553,7 +599,9 @@ function normaliseConfig(raw) {
     }
     config.buttons[name] = merged;
   }
-  if (!(config.moving_threshold >= 0)) throw new Error("moving_threshold must be a number");
+  for (const key of ["moving_threshold", "settled_ms", "min_output_gap_ms"]) {
+    if (!(config[key] >= 0 && config[key] <= 1000)) throw new Error(`${key} must be 0-1000`);
+  }
   return config;
 }
 
@@ -1436,6 +1484,8 @@ function measureMotion(events, gaps) {
       inChain[e.b] = true;
     } else if (e.k === "u") {
       const g = byUp.get(e);
+      e.sinceLastMove = lastMove ? e.t - lastMove.t : null;
+      e.chainTravel = chainTravel[e.b];
       if (g) {
         g.travel = chainTravel[e.b]; g.pressTravel = segmentTravel[e.b];
         g.gapMoves = 0; g.gapTravel = 0;
@@ -1484,7 +1534,7 @@ function scoreConfig(events, gaps, config) {
   return score;
 }
 
-function suggestConfig(gaps, clickPressTravel) {
+function suggestConfig(gaps, clickPressTravel, dropStillness, filterState, loaded) {
   const notes = [];
   const left = gaps.filter((g) => g.button === 0);
   const travelP95 = quantile(clickPressTravel, 0.95);
@@ -1533,9 +1583,29 @@ function suggestConfig(gaps, clickPressTravel) {
       movingMs = 250;
     }
   }
+  // settled_ms: a drop made after the pointer stopped can use the shorter
+  // still window. It must stay above how long the pointer is still before
+  // chatter in a drag, or that chatter would get the short window too.
+  let settledMs = loaded ? loaded.settled_ms : 0;
+  const chatterStillness = moving.filter((g) => g.label === "chatter" && g.sinceLastMove !== null &&
+                                                g.sinceLastMove !== undefined).map((g) => g.sinceLastMove);
+  if (filterState !== "none") {
+    notes.push("A filter was running, so releases reached the page late: drops look stiller and second presses longer than they were, and gaps look shorter. Treat this suggestion as rough; Claude can correct for the loaded config.");
+  } else if (dropStillness.length >= 3 && movingMs > stationaryMs) {
+    const chatterP90 = quantile(chatterStillness, 0.9) || 0;
+    const candidate = Math.max(40, ceilTo(chatterP90 * 1.5 + 20, 10));
+    const helped = dropStillness.filter((value) => value >= candidate).length;
+    if (candidate <= 150 && helped >= dropStillness.length * 0.3) {
+      settledMs = candidate;
+      notes.push(`${helped} of ${dropStillness.length} drops came ${candidate} ms or more after the pointer stopped; with settled_ms ${candidate} those wait ${stationaryMs} ms instead of ${movingMs} ms.`);
+    } else {
+      settledMs = 0;
+    }
+  }
   return {
     config: {
       schema: CONFIG_SCHEMA, device_name: "MX Vertical", moving_threshold: threshold,
+      settled_ms: settledMs, min_output_gap_ms: 40,
       buttons: {
         left: { stationary_ms: stationaryMs, stationary_mode: stationaryMode, moving_ms: movingMs,
                 confirm_ms: confirmMs, bounce_ms: 30 },
@@ -1543,7 +1613,7 @@ function suggestConfig(gaps, clickPressTravel) {
         middle: { stationary_ms: 0, stationary_mode: "hold", moving_ms: 0, confirm_ms: 150, bounce_ms: 30 },
       },
     },
-    notes, threshold, fastest, still, moving, spurious, secondPress,
+    notes, threshold, fastest, still, moving, spurious, secondPress, chatterStillness,
   };
 }
 
@@ -1580,8 +1650,14 @@ function analyse() {
       if (travel !== undefined) clickPressTravel.push(travel);
     }
   }
-  const suggestion = suggestConfig(gaps, clickPressTravel);
+  // How long the pointer had been still when a drag was dropped on purpose.
+  const provisionalThreshold = 12;
+  const dropStillness = events.filter((e) => e.k === "u" && e.b === 0 && KIND_OF[e.c] === "hold" &&
+                                             e.v === "done" && e.chainTravel >= provisionalThreshold &&
+                                             e.sinceLastMove !== null)
+                              .map((e) => e.sinceLastMove);
   const loaded = loadedConfig;
+  const suggestion = suggestConfig(gaps, clickPressTravel, dropStillness, $("filter-state").value, loaded);
   const scoreSuggested = scoreConfig(events, gaps, suggestion.config);
   const scoreLoaded = loaded ? scoreConfig(events, gaps, loaded) : null;
   const scoreDefault = scoreConfig(events, gaps, normaliseConfig(DEFAULT_CONFIG));
@@ -1595,7 +1671,7 @@ function analyse() {
 
   lastAnalysis = {
     events, gaps, left, chatter, suggestion, scoreSuggested, scoreLoaded, scoreDefault, intervals,
-    holds, aliveDuringGap, movingChatter, stallCount, clickPressTravel,
+    holds, aliveDuringGap, movingChatter, stallCount, clickPressTravel, dropStillness,
     ghosts: left.filter((g) => g.label === "ghost"), bounces: left.filter((g) => g.label === "bounce"),
     intentional: left.filter((g) => g.label === "intentional"),
     unclear: left.filter((g) => g.label === "unclear"),
@@ -1615,7 +1691,9 @@ function configLine(config) {
   const l = config.buttons.left;
   const mode = l.stationary_mode === "confirm"
     ? `confirm: click if let go within ${l.confirm_ms} ms, bounce under ${l.bounce_ms} ms` : l.stationary_mode;
-  return `left still ${l.stationary_ms} ms (${mode}), moving ${l.moving_ms} ms, threshold ${config.moving_threshold}`;
+  const settled = config.settled_ms ? `, still after ${config.settled_ms} ms without motion` : "";
+  return `left still ${l.stationary_ms} ms (${mode}), moving ${l.moving_ms} ms${settled}, threshold ${config.moving_threshold}` +
+         `, output gap ${config.min_output_gap_ms} ms`;
 }
 
 function buildReport(a) {
@@ -1644,6 +1722,8 @@ function buildReport(a) {
           ? " → the link stayed up, so the switch is to blame"
           : " → silent gaps: a radio dropout, or the hand paused")
         : ""),
+    `Drops: pointer still for ${describeGaps(a.dropStillness)} before the release` +
+      ` · chatter in drags came ${describeGaps(s.chatterStillness)} after the last move`,
     `Motion reports on the track course: median ${medianInterval ? round1(medianInterval) : "–"} ms` +
       (medianInterval ? ` (~${Math.round(1000 / medianInterval)} Hz)` : "") + `, ${a.stallCount} stall(s) ≥ 60 ms, longest ${round1(Math.max(0, ...a.intervals))} ms`,
     `Suggested: ${configLine(s.config)}`,
@@ -1674,6 +1754,7 @@ function buildReport(a) {
     suggested_config: s.config,
     real_gaps_ms: { double: realGaps("double"), rapid: realGaps("rapid") },
     real_second_press_ms: a.suggestion.secondPress.map((value) => Math.round(value)),
+    drop_stillness_ms: a.dropStillness.map((value) => Math.round(value)),
     loaded_config: loadedConfig,
     scores: { suggested: a.scoreSuggested, loaded: a.scoreLoaded, built_in_default: a.scoreDefault },
   };
